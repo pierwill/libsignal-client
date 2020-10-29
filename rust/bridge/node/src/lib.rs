@@ -7,7 +7,9 @@ use libsignal_protocol_rust::*;
 use neon::context::Context;
 use neon::prelude::*;
 
-fn borrow_this<'a, V, T, F>(cx: &mut MethodContext<'a, V>, f: F) -> T
+mod future;
+
+pub(crate) fn borrow_this<'a, V, T, F>(cx: &mut MethodContext<'a, V>, f: F) -> T
 where
     V: Class,
     F: for<'b> FnOnce(neon::borrow::Ref<'b, &mut <V as Class>::Internals>) -> T,
@@ -39,7 +41,22 @@ declare_types! {
     }
 }
 
+fn print_callback_result(mut cx: FunctionContext) -> JsResult<JsValue> {
+    let callback = cx.argument(0)?;
+    let undefined = cx.undefined();
+    let mut spawner = future::JsFutureSpawner::new();
+    let future = future::JsFuture::new(cx, callback, &spawner, |cx, handle| {
+        handle.to_string(cx).expect("can stringify").value()
+    });
+    spawner.spawn(async {
+        let output: String = future.await;
+        eprintln!("{}", output);
+    });
+    Ok(undefined.upcast())
+}
+
 register_module!(mut cx, {
     cx.export_class::<JsPrivateKey>("PrivateKey")?;
+    cx.export_function("print_callback_result", print_callback_result)?;
     Ok(())
 });
