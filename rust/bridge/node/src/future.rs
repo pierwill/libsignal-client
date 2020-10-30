@@ -140,8 +140,8 @@ impl<T> JsFuture<T> {
         let bound_fulfill = bind.call(cx, fulfill, bind_args).expect("can call bind()");
 
         let then = promise.get(cx, "then").expect("then() exists").downcast::<JsFunction>().expect("then() is a function");
-        let undefined = cx.undefined();
-        then.call(cx, promise, vec![bound_fulfill.upcast::<JsValue>(), undefined.upcast()]).expect("can call then()");
+        let null = cx.null();
+        then.call(cx, promise, vec![bound_fulfill.upcast::<JsValue>(), null.upcast()]).expect("can call then()");
 
         boxed
     }
