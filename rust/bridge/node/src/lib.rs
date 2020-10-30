@@ -41,14 +41,16 @@ declare_types! {
     }
 }
 
-fn print_callback_result<'a>(mut cx: FunctionContext<'a>) -> JsResult<JsValue> {
+fn print_callback_result(mut cx: FunctionContext) -> JsResult<JsValue> {
     let callback = cx.argument::<JsValue>(0)?;
+    let done = cx.argument::<JsValue>(1)?;
     let global = cx.global();
     global.set(&mut cx, "__state", callback)?;
+    global.set(&mut cx, "__done", done)?;
 
     let future_context = future::JsFutureExecutionContext::new();
 
-    future::JsFutureExecutionContext::run(&future_context.clone(), &mut cx, async move {
+    future::JsFutureExecutionContext::run(future_context.clone(), &mut cx, async move {
         let future = future_context.borrow().with_context(|cx| {
             let callback = cx.global().get(cx, "__state").expect("bleh").downcast().expect("bleeeh");
             future::JsFuture::new(cx, callback, future_context.clone(), |cx3, handle| {
@@ -56,11 +58,65 @@ fn print_callback_result<'a>(mut cx: FunctionContext<'a>) -> JsResult<JsValue> {
             })
         });
         let output: String = future.await;
-        eprintln!("{}", output);
+        future_context.borrow().with_context(|cx| {
+            let callback = cx.global().get(cx, "__done").expect("bleh").downcast::<JsFunction>().expect("bleeeh");
+            let null = cx.null();
+            let args = vec![cx.string(format!("{0} {0}", output))];
+            callback.call(cx, null, args).expect("ok");
+        });
     });
 
     Ok(cx.undefined().upcast())
 }
+
+/*
+struct JsSessionStore {
+    // We'd like to store a handle here, but then it'd be locked to the current call context. Instead, we store a hopefully-unique key that lives on the global object.
+    key: String,
+}
+
+impl JsSessionStore {
+    fn new<'a>(cx: &mut FunctionContext<'a>, store: Handle<'a, JsObject>) -> NeonResult<Self> {
+        let key = format!("__store_{:x}", rand::random::<u32>());
+        cx.global().set(cx, key.as_str(), store)?;
+        Ok(Self { key })
+    }
+
+    fn 
+
+    async fn perform_a(cx: &mut FunctionContext) -> String {
+        let future_context = future::JsFutureExecutionContext::new();
+        let op = 
+        future::JsFuture::new(cx, )
+    }
+
+    fn destroy(self, cx: &mut FunctionContext) -> NeonResult<()> {
+        cx.global().set(cx, self.key.as_str(), cx.undefined())?;
+        std::mem::drop(self.key);
+        Ok(())
+    }
+}
+
+impl Drop for JsSessionStore {
+    fn drop(&mut self) {
+        panic!("must be destroyed in a JavaScript context using destroy")
+    }
+}
+
+
+fn use_store(mut cx: FunctionContext) -> JsResult<JsValue> {
+    let store = cx.argument::<JsValue>(0)?;
+    cx.global().set(&mut cx, "__store", store)?;
+
+    let future_context = future::JsFutureExecutionContext::new();
+
+    let store = 
+
+    future::JsFutureExecutionContext::run(future_context.clone(), &mut cx, async move {
+        
+    });
+}
+*/
 
 register_module!(mut cx, {
     cx.export_class::<JsPrivateKey>("PrivateKey")?;

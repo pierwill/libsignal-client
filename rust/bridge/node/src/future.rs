@@ -12,6 +12,7 @@ use std::pin::Pin;
 use std::cell::{Cell,RefCell};
 use std::rc::Rc;
 use std::marker::PhantomPinned;
+use std::panic;
 use futures::executor::LocalPool;
 use futures::task::LocalSpawnExt;
 use scopeguard::defer;
@@ -150,12 +151,12 @@ trait CurrentContext {
     fn with_context(&self, callback: &mut dyn for<'a> FnMut(&mut FunctionContext<'a>));
 }
 
-struct CurrentContextImpl<'a> {
-    context: RefCell<FunctionContext<'a>>
+struct CurrentContextImpl<'a, 'b> {
+    context: &'b RefCell<FunctionContext<'a>>
 }
 
-impl<'a> CurrentContext for CurrentContextImpl<'a> {
-    fn with_context(&self, callback: &mut dyn for<'b> FnMut(&mut FunctionContext<'b>)) {
+impl<'a, 'b> CurrentContext for CurrentContextImpl<'a, 'b> {
+    fn with_context(&self, callback: &mut dyn for<'c> FnMut(&mut FunctionContext<'c>)) {
         callback(&mut self.context.borrow_mut())
     }
 }
@@ -168,15 +169,33 @@ pub struct JsFutureExecutionContext {
 
     num_pending_js_futures: i32,
 
+    complete: bool,
+
     pool: Option<LocalPool>,
 }
+
+// Based on https://crates.io/crates/take_mut.
+fn as_ref_cell<T, F>(mut_ref: &mut T, closure: F)
+where F: FnOnce(&RefCell<T>) {
+    use std::ptr;
+
+    unsafe {
+        let cell = RefCell::new(ptr::read(mut_ref));
+        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| closure(&cell)));
+        ptr::write(mut_ref, cell.into_inner());
+        if let Err(err) = result {
+            panic::resume_unwind(err);
+        }
+    }
+}
+
 
 impl JsFutureExecutionContext {
     fn run_with_context<'a>(self_: &RefCell<Self>, cx: &mut FunctionContext<'a>, action: impl FnOnce()) {
         // While running, we use a RefCell to dynamically check access to the JS context.
         // But a RefCell has to own its data. take_mut allows us to take the context out of its current reference and put it back later, like a more advanced version of std::mem::replace.
-        take_mut::take(cx, |cx| {
-            let c = CurrentContextImpl { context: RefCell::new(cx) };
+        as_ref_cell(cx, |cx| {
+            let c = CurrentContextImpl { context: cx };
             // Lie about the lifetime of `c` so that it can be accessed from arbitrary call sites.
             // "This is advanced, very unsafe Rust!" - std::mem::transmute docs on lifetime extension.
             let opaque_c = unsafe { std::mem::transmute::<_, &'static dyn CurrentContext>(&c as &dyn CurrentContext) };
@@ -186,15 +205,14 @@ impl JsFutureExecutionContext {
 
             action();
 
-            if let Some(mut pool) = self_.borrow_mut().pool.take() {
+            let maybe_pool = { self_.borrow_mut().pool.take() };
+            if let Some(mut pool) = maybe_pool {
                 pool.run_until_stalled();
-                assert!(self_.borrow().num_pending_js_futures > 0, "only supports blocking on JavaScript futures");
+                assert!(self_.borrow().complete || self_.borrow().num_pending_js_futures > 0, "only supports blocking on JavaScript futures");
                 self_.borrow_mut().pool = Some(pool);
             } else {
                 // We're in a recursive call and the pool will continue to be processed when we return.
             }
-
-            c.context.into_inner()
         });
     }
 
@@ -216,47 +234,15 @@ impl JsFutureExecutionContext {
     }
 
     pub fn new() -> Rc<RefCell<Self>> {
-        Rc::new(RefCell::new(Self { very_unsafe_current_context: None, num_pending_js_futures: 0, pool: Some(LocalPool::new()) }))
+        Rc::new(RefCell::new(Self { very_unsafe_current_context: None, num_pending_js_futures: 0, complete: true, pool: Some(LocalPool::new()) }))
     }
 
-    pub fn run<'a>(self_: &RefCell<Self>, cx: &mut FunctionContext<'a>, future: impl Future<Output = ()> + 'static) {
-        self_.borrow().pool.as_ref().unwrap().spawner().spawn_local(future).expect("cannot fail to spawn on a LocalPool");
-        Self::run_with_context(self_, cx, || {});
+    pub fn run<'a>(self_: Rc<RefCell<Self>>, cx: &mut FunctionContext<'a>, future: impl Future<Output = ()> + 'static) {
+        let self_for_future = self_.clone();
+        self_.borrow().pool.as_ref().unwrap().spawner().spawn_local(async move {
+            future.await;
+            self_for_future.borrow_mut().complete = true;
+        }).expect("cannot fail to spawn on a LocalPool");
+        Self::run_with_context(&self_, cx, || {});
     }
 }
-
-// fn test(cx: FunctionContext) {
-//     let future_context = JsFutureExecutionContext::new();
-//     let op = async {
-//         println!("");
-//         await JsFuture::new(cx, future_context)
-//     };
-// }
-
-// const jsWakerVTable: std::task::RawWakerVTable = std::task::RawWakerVTable::new(
-//     |p| RawWaker::new(p, &jsWakerVTable),
-//     |p| {
-//         let pool = p as *mut LocalPool;
-//         unsafe { (*pool).run_until_stalled() }
-//     },
-//     |p| {
-//         let pool = p as *mut LocalPool;
-//         unsafe { (*pool).run_until_stalled() }
-//     },
-//     |_p| {}
-// );
-
-// pub struct JsFutureSpawner {
-//     pool: &'static mut LocalPool
-// }
-//
-// impl JsFutureSpawner {
-//     pub fn new() -> Self {
-//         Self { pool: Box::leak(Box::new(LocalPool::new())) }
-//     }
-//
-//     pub fn spawn(&mut self, future: impl Future<Output = ()> + 'static) {
-//         self.pool.spawner().spawn_local(future).unwrap();
-//         self.pool.run_until_stalled();
-//     }
-// }
