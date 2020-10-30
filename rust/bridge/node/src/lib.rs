@@ -41,18 +41,25 @@ declare_types! {
     }
 }
 
-fn print_callback_result(mut cx: FunctionContext) -> JsResult<JsValue> {
-    let callback = cx.argument(0)?;
-    let undefined = cx.undefined();
-    let mut spawner = future::JsFutureSpawner::new();
-    let future = future::JsFuture::new(cx, callback, &spawner, |cx, handle| {
-        handle.to_string(cx).expect("can stringify").value()
-    });
-    spawner.spawn(async {
+fn print_callback_result<'a>(mut cx: FunctionContext<'a>) -> JsResult<JsValue> {
+    let callback = cx.argument::<JsValue>(0)?;
+    let global = cx.global();
+    global.set(&mut cx, "__state", callback)?;
+
+    let future_context = future::JsFutureExecutionContext::new();
+
+    future::JsFutureExecutionContext::run(&future_context.clone(), &mut cx, async move {
+        let future = future_context.borrow().with_context(|cx| {
+            let callback = cx.global().get(cx, "__state").expect("bleh").downcast().expect("bleeeh");
+            future::JsFuture::new(cx, callback, future_context.clone(), |cx3, handle| {
+                handle.to_string(cx3).expect("can stringify").value()
+            })
+        });
         let output: String = future.await;
         eprintln!("{}", output);
     });
-    Ok(undefined.upcast())
+
+    Ok(cx.undefined().upcast())
 }
 
 register_module!(mut cx, {

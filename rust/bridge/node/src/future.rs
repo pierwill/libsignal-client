@@ -9,48 +9,56 @@ use neon::prelude::*;
 use std::future::Future;
 use std::task::{Poll,Waker};
 use std::pin::Pin;
-use std::cell::Cell;
+use std::cell::{Cell,RefCell};
+use std::rc::Rc;
+use std::marker::PhantomPinned;
 use futures::executor::LocalPool;
 use futures::task::LocalSpawnExt;
+use scopeguard::defer;
 
 type JsFulfillmentCallback<T> = for<'a> fn(&mut FunctionContext<'a>, Handle<'a, JsValue>) -> T;
 type OpaqueJsFulfillmentCallback = for<'a> fn(&mut FunctionContext<'a>, Handle<'a, JsValue>, *const());
 
 enum JsFutureState<T> {
-    Started,
-    Waiting(Waker),
+    Started(Rc<RefCell<JsFutureExecutionContext>>),
+    Waiting(Rc<RefCell<JsFutureExecutionContext>>, Waker),
     Complete(T),
     Consumed,
+}
+
+impl<T> JsFutureState<T> {
+    fn into_executor(self) -> Rc<RefCell<JsFutureExecutionContext>> {
+        match self {
+            JsFutureState::Started(executor) | JsFutureState::Waiting(executor, _) => executor,
+            JsFutureState::Complete(_) | JsFutureState::Consumed => panic!("already completed"),
+        }
+    }
 }
 
 struct JsFutureInfo<T> {
     transform: JsFulfillmentCallback<T>,
     state: JsFutureState<T>,
-    pool: *mut LocalPool,
 }
 
 impl<T> JsFutureInfo<T> {
-    fn new(transform: JsFulfillmentCallback<T>, pool: &LocalPool) -> Self {
+    fn new(transform: JsFulfillmentCallback<T>, executor: Rc<RefCell<JsFutureExecutionContext>>) -> Self {
         Self {
             transform,
-            state: JsFutureState::Started,
-            pool: pool as *const LocalPool as *mut LocalPool,
+            state: JsFutureState::Started(executor),
         }
     }
 
     fn waiting_on(self, waker: Waker) -> Self {
         Self {
             transform: self.transform,
-            state: JsFutureState::Waiting(waker),
-            pool: self.pool,
+            state: JsFutureState::Waiting(self.state.into_executor(), waker),
         }
     }
 
-    fn complete(self, value: T) -> Self {
+    fn complete(value: T) -> Self {
         Self {
             transform: |_cx, _handle| panic!("already completed"),
             state: JsFutureState::Complete(value),
-            pool: std::ptr::null_mut(),
         }
     }
 
@@ -58,22 +66,14 @@ impl<T> JsFutureInfo<T> {
         Self {
             transform: |_cx, _handle| panic!("already consumed"),
             state: JsFutureState::Consumed,
-            pool: std::ptr::null_mut(),
-        }
-    }
-
-    fn waker_or_none(&self) -> Option<Waker> {
-        if let JsFutureState::Waiting(waker) = &self.state {
-            Some(waker.clone())
-        } else {
-            None
         }
     }
 }
 
 
 pub struct JsFuture<T> {
-    info: Box<Cell<JsFutureInfo<T>>>,
+    info: Cell<JsFutureInfo<T>>,
+    _pinned: PhantomPinned,
 }
 
 impl <T> Future for JsFuture<T> {
@@ -81,12 +81,16 @@ impl <T> Future for JsFuture<T> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let info = self.info.replace(JsFutureInfo::consumed());
-        if let JsFutureState::Complete(result) = info.state {
-            Poll::Ready(result)
-        } else {
-            self.info.set(info.waiting_on(cx.waker().clone()));
-            Poll::Pending
+        match info.state {
+            JsFutureState::Complete(result) => return Poll::Ready(result),
+            JsFutureState::Consumed => panic!("already consumed"),
+            JsFutureState::Started(ref executor) => {
+                executor.borrow_mut().register_future();
+            }
+            JsFutureState::Waiting(_, _) => {}
         }
+        self.info.set(info.waiting_on(cx.waker().clone()));
+        Poll::Pending
     }
 }
 
@@ -100,41 +104,134 @@ fn fulfill<'a>(mut cx: FunctionContext<'a>) -> JsResult<'a, JsUndefined> {
 }
 
 fn get_save_result_fn<T>() -> OpaqueJsFulfillmentCallback {
-    return |cx, js_result, opaque_cell_ptr| {
-        let cell = unsafe { (opaque_cell_ptr as *const Cell<JsFutureInfo<T>>).as_ref().unwrap() };
-        let info = cell.replace(JsFutureInfo::consumed());
-
-        let waker = info.waker_or_none();
-        let pool = info.pool;
-
+    return |cx, js_result, opaque_ptr| {
+        let future = unsafe { (opaque_ptr as *const JsFuture<T>).as_ref().unwrap() };
+        let info = future.info.replace(JsFutureInfo::consumed());
         let result = (info.transform)(cx, js_result);
-        cell.set(info.complete(result));
+        future.info.set(JsFutureInfo::complete(result));
 
-        if let Some(waker) = waker {
-            waker.wake();
+        match info.state {
+            JsFutureState::Started(executor) => {
+                executor.borrow_mut().resolve_future();
+                JsFutureExecutionContext::run_with_context(&executor, cx, || {});
+            }
+            JsFutureState::Waiting(executor, waker) => {
+                executor.borrow_mut().resolve_future();
+                JsFutureExecutionContext::run_with_context(&executor, cx, || waker.wake());
+            }
+            _ => {
+                panic!("already fulfilled")
+            }
         }
-        unsafe { (*pool).run_until_stalled() }
     }
 }
 
 impl<T> JsFuture<T> {
-    pub fn new<'a, C>(mut cx: C, promise: Handle<'a, JsObject>, spawner: &JsFutureSpawner, transform: JsFulfillmentCallback<T>) -> Self where C: Context<'a> {
-        let cell = Box::new(Cell::new(JsFutureInfo::new(transform, &*spawner.pool)));
-        let cell_ptr = cell.as_ptr();
+    pub fn new<'a, C>(cx: &mut C, promise: Handle<'a, JsObject>, executor: Rc<RefCell<JsFutureExecutionContext>>, transform: JsFulfillmentCallback<T>) -> Pin<Box<Self>> where C: Context<'a> {
+        let cell = Cell::new(JsFutureInfo::new(transform, executor));
+        let boxed = Box::pin(Self { info: cell, _pinned: PhantomPinned });
+        let boxed_ptr = &(*boxed) as *const Self;
         let save_result_ptr = unsafe { std::mem::transmute::<_, *const ()>(get_save_result_fn::<T>()) };
 
-        let fulfill = JsFunction::new(&mut cx, fulfill).expect("can create function");
-        let bind = fulfill.get(&mut cx, "bind").expect("bind() exists").downcast::<JsFunction>().expect("bind() is a function");
-        let bind_args = vec![cx.undefined().upcast::<JsValue>(), cx.number(save_result_ptr as u64 as f64).upcast(), cx.number(cell_ptr as u64 as f64).upcast()];
-        let bound_fulfill = bind.call(&mut cx, fulfill, bind_args).expect("can call bind()");
+        let fulfill = JsFunction::new(cx, fulfill).expect("can create function");
+        let bind = fulfill.get(cx, "bind").expect("bind() exists").downcast::<JsFunction>().expect("bind() is a function");
+        let bind_args = vec![cx.undefined().upcast::<JsValue>(), cx.number(save_result_ptr as u64 as f64).upcast(), cx.number(boxed_ptr as u64 as f64).upcast()];
+        let bound_fulfill = bind.call(cx, fulfill, bind_args).expect("can call bind()");
 
-        let then = promise.get(&mut cx, "then").expect("then() exists").downcast::<JsFunction>().expect("then() is a function");
+        let then = promise.get(cx, "then").expect("then() exists").downcast::<JsFunction>().expect("then() is a function");
         let undefined = cx.undefined();
-        then.call(&mut cx, promise, vec![bound_fulfill.upcast::<JsValue>(), undefined.upcast()]).expect("can call then()");
+        then.call(cx, promise, vec![bound_fulfill.upcast::<JsValue>(), undefined.upcast()]).expect("can call then()");
 
-        Self { info: cell }
+        boxed
     }
 }
+
+trait CurrentContext {
+    fn with_context(&self, callback: &mut dyn for<'a> FnMut(&mut FunctionContext<'a>));
+}
+
+struct CurrentContextImpl<'a> {
+    context: RefCell<FunctionContext<'a>>
+}
+
+impl<'a> CurrentContext for CurrentContextImpl<'a> {
+    fn with_context(&self, callback: &mut dyn for<'b> FnMut(&mut FunctionContext<'b>)) {
+        callback(&mut self.context.borrow_mut())
+    }
+}
+
+pub struct JsFutureExecutionContext {
+    // This 'static is a lie that allows the JavaScript context to be accessed from arbitrary use sites.
+    // Be very very careful that you do not persist this reference.
+    // Also do not share the 'static outside the implementation of JsFutureExecutionContext.
+    very_unsafe_current_context: Option<&'static dyn CurrentContext>,
+
+    num_pending_js_futures: i32,
+
+    pool: Option<LocalPool>,
+}
+
+impl JsFutureExecutionContext {
+    fn run_with_context<'a>(self_: &RefCell<Self>, cx: &mut FunctionContext<'a>, action: impl FnOnce()) {
+        // While running, we use a RefCell to dynamically check access to the JS context.
+        // But a RefCell has to own its data. take_mut allows us to take the context out of its current reference and put it back later, like a more advanced version of std::mem::replace.
+        take_mut::take(cx, |cx| {
+            let c = CurrentContextImpl { context: RefCell::new(cx) };
+            // Lie about the lifetime of `c` so that it can be accessed from arbitrary call sites.
+            // "This is advanced, very unsafe Rust!" - std::mem::transmute docs on lifetime extension.
+            let opaque_c = unsafe { std::mem::transmute::<_, &'static dyn CurrentContext>(&c as &dyn CurrentContext) };
+            let prev_context = self_.borrow().very_unsafe_current_context;
+            self_.borrow_mut().very_unsafe_current_context = Some(opaque_c);
+            defer! { self_.borrow_mut().very_unsafe_current_context = prev_context };
+
+            action();
+
+            if let Some(mut pool) = self_.borrow_mut().pool.take() {
+                pool.run_until_stalled();
+                assert!(self_.borrow().num_pending_js_futures > 0, "only supports blocking on JavaScript futures");
+                self_.borrow_mut().pool = Some(pool);
+            } else {
+                // We're in a recursive call and the pool will continue to be processed when we return.
+            }
+
+            c.context.into_inner()
+        });
+    }
+
+    fn register_future(&mut self) {
+        self.num_pending_js_futures += 1
+    }
+
+    fn resolve_future(&mut self) {
+        self.num_pending_js_futures -= 1
+    }
+
+    pub fn with_context<R>(&self, mut callback: impl for<'a> FnMut(&mut FunctionContext<'a>) -> R) -> R {
+        let context_holder = self.very_unsafe_current_context.expect("cannot use the JS context outside of a JS call");
+        let mut result = None;
+        context_holder.with_context(&mut |cx| {
+            result = Some(callback(cx))
+        });
+        result.unwrap() // The callback is always called; we just can't prove it to the compiler.
+    }
+
+    pub fn new() -> Rc<RefCell<Self>> {
+        Rc::new(RefCell::new(Self { very_unsafe_current_context: None, num_pending_js_futures: 0, pool: Some(LocalPool::new()) }))
+    }
+
+    pub fn run<'a>(self_: &RefCell<Self>, cx: &mut FunctionContext<'a>, future: impl Future<Output = ()> + 'static) {
+        self_.borrow().pool.as_ref().unwrap().spawner().spawn_local(future).expect("cannot fail to spawn on a LocalPool");
+        Self::run_with_context(self_, cx, || {});
+    }
+}
+
+// fn test(cx: FunctionContext) {
+//     let future_context = JsFutureExecutionContext::new();
+//     let op = async {
+//         println!("");
+//         await JsFuture::new(cx, future_context)
+//     };
+// }
 
 // const jsWakerVTable: std::task::RawWakerVTable = std::task::RawWakerVTable::new(
 //     |p| RawWaker::new(p, &jsWakerVTable),
@@ -149,17 +246,17 @@ impl<T> JsFuture<T> {
 //     |_p| {}
 // );
 
-pub struct JsFutureSpawner {
-    pool: &'static mut LocalPool
-}
-
-impl JsFutureSpawner {
-    pub fn new() -> Self {
-        Self { pool: Box::leak(Box::new(LocalPool::new())) }
-    }
-
-    pub fn spawn(&mut self, future: impl Future<Output = ()> + 'static) {
-        self.pool.spawner().spawn_local(future).unwrap();
-        self.pool.run_until_stalled();
-    }
-}
+// pub struct JsFutureSpawner {
+//     pool: &'static mut LocalPool
+// }
+//
+// impl JsFutureSpawner {
+//     pub fn new() -> Self {
+//         Self { pool: Box::leak(Box::new(LocalPool::new())) }
+//     }
+//
+//     pub fn spawn(&mut self, future: impl Future<Output = ()> + 'static) {
+//         self.pool.spawner().spawn_local(future).unwrap();
+//         self.pool.run_until_stalled();
+//     }
+// }
