@@ -71,42 +71,25 @@ fn print_callback_result(mut cx: FunctionContext) -> JsResult<JsValue> {
 
 
 struct JsSessionStore {
-    // We'd like to store a handle here, but then it'd be locked to the current call context. Instead, we store a hopefully-unique key that lives on the global object.
-    key: String,
     context: future::JsAsyncContext,
+    key: future::JsAsyncContextKey<JsObject>,
 }
 
 impl JsSessionStore {
     fn new<'a>(cx: &mut FunctionContext<'a>, store: Handle<'a, JsObject>, context: future::JsAsyncContext) -> NeonResult<Self> {
-        let key = format!("__store_{:x}", context.unique_id());
-        assert!(cx.global().get(cx, key.as_str())?.is_a::<JsUndefined>(), "unique key for global storage already in use");
-        cx.global().set(cx, key.as_str(), store)?;
-        Ok(Self { key, context })
-    }
-
-    fn store_object<'a>(&self, cx: &mut FunctionContext<'a>) -> JsResult<'a, JsObject> {
-        cx.global().get(cx, self.key.as_str())?.downcast_or_throw(cx)
+        let key = context.register_context_data(cx, store)?;
+        Ok(Self { context, key })
     }
 
     async fn perform_a(&self) -> String {
-        let future = self.context.with_context(|cx| {
-            let store_object = self.store_object(cx).expect("exists");
+        self.context.with_context(|cx| {
+            let store_object = self.context.get_context_data(cx, self.key).expect("exists");
             let op = store_object.get(cx, "a").expect("exists").downcast::<JsFunction>().expect("is function");
             let promise = op.call(cx, store_object, std::iter::empty::<Handle<JsValue>>()).expect("success");
             future::JsFuture::new(cx, promise.downcast().unwrap(), self.context.clone(), |_cx, handle| {
                 handle.downcast::<JsString>().expect("is string").value()
             })
-        });
-        future.await
-    }
-}
-
-impl Drop for JsSessionStore {
-    fn drop(&mut self) {
-        self.context.with_context(|cx| {
-            let undef = cx.undefined();
-            cx.global().set(cx, self.key.as_str(), undef).expect("no one else cleared this");
-        });
+        }).await
     }
 }
 

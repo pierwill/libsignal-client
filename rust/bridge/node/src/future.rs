@@ -11,11 +11,10 @@ use std::task::{Poll,Waker};
 use std::pin::Pin;
 use std::cell::{Cell,RefCell};
 use std::rc::Rc;
-use std::marker::PhantomPinned;
+use std::marker::{PhantomData,PhantomPinned};
 use std::panic;
 use futures::executor::LocalPool;
 use futures::task::LocalSpawnExt;
-use scopeguard::defer;
 
 type JsFulfillmentCallback<T> = for<'a> fn(&mut FunctionContext<'a>, Handle<'a, JsValue>) -> T;
 type OpaqueJsFulfillmentCallback = for<'a> fn(&mut FunctionContext<'a>, Handle<'a, JsValue>, *const());
@@ -170,6 +169,22 @@ struct JsAsyncContextImpl {
     complete: bool,
 
     pool: Option<LocalPool>,
+
+    global_key: String,
+
+    num_globals: u32,
+
+    _pinned: PhantomPinned,
+}
+
+impl Drop for JsAsyncContextImpl {
+    fn drop(&mut self) {
+        let current_context = self.very_unsafe_current_context.expect("must clean up JsAsyncContext during the fulfillment of the last JS callback invoked");
+        current_context.with_context(&mut |cx| {
+            let undef = cx.undefined();
+            cx.global().set(cx, self.global_key.as_str(), undef).expect("no one else cleared this");
+        });
+    }
 }
 
 // Based on https://crates.io/crates/take_mut.
@@ -187,14 +202,19 @@ where F: FnOnce(&RefCell<T>) {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct JsAsyncContextKey<T: neon::types::Value> {
+    raw_key: u32,
+    _type: PhantomData<T>,
+}
 
 #[derive(Clone)]
 pub struct JsAsyncContext {
-    shared_state: Rc<RefCell<JsAsyncContextImpl>>
+    shared_state: Pin<Rc<RefCell<JsAsyncContextImpl>>>
 }
 
 impl JsAsyncContext {
-    fn run_with_context(&self, cx: &mut FunctionContext, action: impl FnOnce()) {
+    fn run_with_context(self, cx: &mut FunctionContext, action: impl FnOnce()) {
         // While running, we use a RefCell to dynamically check access to the JS context.
         // But a RefCell has to own its data. as_ref_cell allows us to take the context out of its current reference and put it back later, like a more advanced version of std::mem::replace.
         as_ref_cell(cx, |cx| {
@@ -204,17 +224,22 @@ impl JsAsyncContext {
             let opaque_c = unsafe { std::mem::transmute::<_, &'static dyn CurrentContext>(&c as &dyn CurrentContext) };
             let prev_context = self.shared_state.borrow().very_unsafe_current_context;
             self.shared_state.borrow_mut().very_unsafe_current_context = Some(opaque_c);
-            defer! { self.shared_state.borrow_mut().very_unsafe_current_context = prev_context };
 
             action();
 
-            let maybe_pool = { self.shared_state.borrow_mut().pool.take() };
+            let maybe_pool = self.shared_state.borrow_mut().pool.take();
             if let Some(mut pool) = maybe_pool {
                 pool.run_until_stalled();
                 assert!(self.shared_state.borrow().complete || self.shared_state.borrow().num_pending_js_futures > 0, "only supports blocking on JavaScript futures");
                 self.shared_state.borrow_mut().pool = Some(pool);
             } else {
                 // We're in a recursive call and the pool will continue to be processed when we return.
+            }
+
+            // If this is the last reference, destroy it while the JavaScript context is still available.
+            match Rc::try_unwrap(unsafe { Pin::into_inner_unchecked(self.shared_state) }) {
+                Ok(state) => std::mem::drop(state),
+                Err(shared_state) => shared_state.borrow_mut().very_unsafe_current_context = prev_context
             }
         });
     }
@@ -228,7 +253,17 @@ impl JsAsyncContext {
     }
 
     pub fn new() -> Self {
-        Self { shared_state: Rc::new(RefCell::new(JsAsyncContextImpl { very_unsafe_current_context: None, num_pending_js_futures: 0, complete: true, pool: Some(LocalPool::new()) })) }
+        let result = Self { shared_state: Rc::pin(RefCell::new(JsAsyncContextImpl {
+            very_unsafe_current_context: None,
+            num_pending_js_futures: 0,
+            complete: false,
+            pool: Some(LocalPool::new()),
+            global_key: String::new(), // replaced below based on the address this object gets pinned to
+            num_globals: 0,
+            _pinned: PhantomPinned,
+        })) };
+        result.shared_state.borrow_mut().global_key = format!("__libsignal-client::JsAsyncContext::{:x}", result.shared_state.as_ptr() as usize);
+        result
     }
 
     pub fn with_context<R>(&self, mut callback: impl for<'a> FnMut(&mut FunctionContext<'a>) -> R) -> R {
@@ -250,7 +285,27 @@ impl JsAsyncContext {
         self.run_with_context(cx, || {});
     }
 
-    pub fn unique_id(&self) -> usize {
-        self.shared_state.as_ptr() as usize
+    fn context_data_object<'a>(&self, cx: &mut FunctionContext<'a>, create_if_needed: bool) -> Handle<'a, JsObject> {
+        let global_key = &self.shared_state.borrow().global_key;
+
+        let context_storage = cx.global().get(cx, global_key.as_ref()).expect("can always get properties on the global object");
+        if create_if_needed && context_storage.is_a::<JsUndefined>() {
+            let new_storage = cx.empty_object();
+            cx.global().set(cx, global_key.as_ref(), new_storage).expect("can always set properties on the global object");
+            new_storage
+        } else {
+            context_storage.downcast().expect("context data accessed improperly somehow")
+        }
+    }
+
+    pub fn register_context_data<'a, T: neon::types::Value>(&self, cx: &mut FunctionContext<'a>, value: Handle<'a, T>) -> NeonResult<JsAsyncContextKey<T>> {
+        let raw_key = self.shared_state.borrow().num_globals;
+        self.shared_state.borrow_mut().num_globals += 1;
+        self.context_data_object(cx, true).set(cx, raw_key, value)?;
+        Ok(JsAsyncContextKey { raw_key, _type: PhantomData })
+    }
+
+    pub fn get_context_data<'a, T: neon::types::Value>(&self, cx: &mut FunctionContext<'a>, key: JsAsyncContextKey<T>) -> JsResult<'a, T> {
+        self.context_data_object(cx, false).get(cx, key.raw_key)?.downcast_or_throw(cx)
     }
 }
