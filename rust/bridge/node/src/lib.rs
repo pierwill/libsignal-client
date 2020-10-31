@@ -48,17 +48,17 @@ fn print_callback_result(mut cx: FunctionContext) -> JsResult<JsValue> {
     global.set(&mut cx, "__state", callback)?;
     global.set(&mut cx, "__done", done)?;
 
-    let future_context = future::JsFutureExecutionContext::new();
+    let future_context = future::JsAsyncContext::new();
 
-    future::JsFutureExecutionContext::run(future_context.clone(), &mut cx, async move {
-        let future = future_context.borrow().with_context(|cx| {
+    future_context.clone().run(&mut cx, async move {
+        let future = future_context.with_context(|cx| {
             let callback = cx.global().get(cx, "__state").expect("bleh").downcast().expect("bleeeh");
             future::JsFuture::new(cx, callback, future_context.clone(), |cx3, handle| {
                 handle.to_string(cx3).expect("can stringify").value()
             })
         });
         let output: String = future.await;
-        future_context.borrow().with_context(|cx| {
+        future_context.with_context(|cx| {
             let callback = cx.global().get(cx, "__done").expect("bleh").downcast::<JsFunction>().expect("bleeeh");
             let null = cx.null();
             let args = vec![cx.string(format!("{0} {0}", output))];
@@ -73,12 +73,12 @@ fn print_callback_result(mut cx: FunctionContext) -> JsResult<JsValue> {
 struct JsSessionStore {
     // We'd like to store a handle here, but then it'd be locked to the current call context. Instead, we store a hopefully-unique key that lives on the global object.
     key: String,
-    context: std::rc::Rc<std::cell::RefCell<future::JsFutureExecutionContext>>,
+    context: future::JsAsyncContext,
 }
 
 impl JsSessionStore {
-    fn new<'a>(cx: &mut FunctionContext<'a>, store: Handle<'a, JsObject>, context: std::rc::Rc<std::cell::RefCell<future::JsFutureExecutionContext>>) -> NeonResult<Self> {
-        let key = format!("__store_{:x}", context.as_ptr() as usize);
+    fn new<'a>(cx: &mut FunctionContext<'a>, store: Handle<'a, JsObject>, context: future::JsAsyncContext) -> NeonResult<Self> {
+        let key = format!("__store_{:x}", context.unique_id());
         assert!(cx.global().get(cx, key.as_str())?.is_a::<JsUndefined>(), "unique key for global storage already in use");
         cx.global().set(cx, key.as_str(), store)?;
         Ok(Self { key, context })
@@ -89,9 +89,11 @@ impl JsSessionStore {
     }
 
     async fn perform_a(&self) -> String {
-        let future = self.context.borrow().with_context(|cx| {
-            let op = self.store_object(cx).expect("exists").get(cx, "a").expect("exists");
-            future::JsFuture::new(cx, op.downcast().unwrap(), self.context.clone(), |_cx, handle| {
+        let future = self.context.with_context(|cx| {
+            let store_object = self.store_object(cx).expect("exists");
+            let op = store_object.get(cx, "a").expect("exists").downcast::<JsFunction>().expect("is function");
+            let promise = op.call(cx, store_object, std::iter::empty::<Handle<JsValue>>()).expect("success");
+            future::JsFuture::new(cx, promise.downcast().unwrap(), self.context.clone(), |_cx, handle| {
                 handle.downcast::<JsString>().expect("is string").value()
             })
         });
@@ -101,7 +103,7 @@ impl JsSessionStore {
 
 impl Drop for JsSessionStore {
     fn drop(&mut self) {
-        self.context.borrow().with_context(|cx| {
+        self.context.with_context(|cx| {
             let undef = cx.undefined();
             cx.global().set(cx, self.key.as_str(), undef).expect("no one else cleared this");
         });
@@ -116,13 +118,11 @@ async fn use_store_impl(store: JsSessionStore) {
 fn use_store(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     let store = cx.argument(0)?;
 
-    let future_context = future::JsFutureExecutionContext::new();
+    let future_context = future::JsAsyncContext::new();
 
     let store = JsSessionStore::new(&mut cx, store, future_context.clone())?;
 
-    future::JsFutureExecutionContext::run(future_context, &mut cx, async move {
-        use_store_impl(store).await;
-    });
+    future_context.run(&mut cx, use_store_impl(store));
 
     Ok(cx.undefined())
 }

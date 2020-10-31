@@ -21,16 +21,16 @@ type JsFulfillmentCallback<T> = for<'a> fn(&mut FunctionContext<'a>, Handle<'a, 
 type OpaqueJsFulfillmentCallback = for<'a> fn(&mut FunctionContext<'a>, Handle<'a, JsValue>, *const());
 
 enum JsFutureState<T> {
-    Started(Rc<RefCell<JsFutureExecutionContext>>),
-    Waiting(Rc<RefCell<JsFutureExecutionContext>>, Waker),
+    Started(JsAsyncContext),
+    Waiting(JsAsyncContext, Waker),
     Complete(T),
     Consumed,
 }
 
 impl<T> JsFutureState<T> {
-    fn into_executor(self) -> Rc<RefCell<JsFutureExecutionContext>> {
+    fn into_async_context(self) -> JsAsyncContext {
         match self {
-            JsFutureState::Started(executor) | JsFutureState::Waiting(executor, _) => executor,
+            JsFutureState::Started(context) | JsFutureState::Waiting(context, _) => context,
             JsFutureState::Complete(_) | JsFutureState::Consumed => panic!("already completed"),
         }
     }
@@ -42,17 +42,17 @@ struct JsFutureInfo<T> {
 }
 
 impl<T> JsFutureInfo<T> {
-    fn new(transform: JsFulfillmentCallback<T>, executor: Rc<RefCell<JsFutureExecutionContext>>) -> Self {
+    fn new(transform: JsFulfillmentCallback<T>, context: JsAsyncContext) -> Self {
         Self {
             transform,
-            state: JsFutureState::Started(executor),
+            state: JsFutureState::Started(context),
         }
     }
 
     fn waiting_on(self, waker: Waker) -> Self {
         Self {
             transform: self.transform,
-            state: JsFutureState::Waiting(self.state.into_executor(), waker),
+            state: JsFutureState::Waiting(self.state.into_async_context(), waker),
         }
     }
 
@@ -80,14 +80,12 @@ pub struct JsFuture<T> {
 impl <T> Future for JsFuture<T> {
     type Output = T;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context) -> Poll<Self::Output> {
         let info = self.info.replace(JsFutureInfo::consumed());
         match info.state {
             JsFutureState::Complete(result) => return Poll::Ready(result),
             JsFutureState::Consumed => panic!("already consumed"),
-            JsFutureState::Started(ref executor) => {
-                executor.borrow_mut().register_future();
-            }
+            JsFutureState::Started(ref async_context) => async_context.register_future(),
             JsFutureState::Waiting(_, _) => {}
         }
         self.info.set(info.waiting_on(cx.waker().clone()));
@@ -95,7 +93,7 @@ impl <T> Future for JsFuture<T> {
     }
 }
 
-fn fulfill<'a>(mut cx: FunctionContext<'a>) -> JsResult<'a, JsUndefined> {
+fn fulfill(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     let result = cx.argument(2)?;
     let cell_ptr = cx.argument::<JsNumber>(1)?.value() as u64 as *const ();
     let save_result_ptr = cx.argument::<JsNumber>(0)?.value() as u64 as *const ();
@@ -112,13 +110,13 @@ fn get_save_result_fn<T>() -> OpaqueJsFulfillmentCallback {
         future.info.set(JsFutureInfo::complete(result));
 
         match info.state {
-            JsFutureState::Started(executor) => {
-                executor.borrow_mut().resolve_future();
-                JsFutureExecutionContext::run_with_context(&executor, cx, || {});
+            JsFutureState::Started(async_context) => {
+                async_context.resolve_future();
+                async_context.run_with_context(cx, || {});
             }
-            JsFutureState::Waiting(executor, waker) => {
-                executor.borrow_mut().resolve_future();
-                JsFutureExecutionContext::run_with_context(&executor, cx, || waker.wake());
+            JsFutureState::Waiting(async_context, waker) => {
+                async_context.resolve_future();
+                async_context.run_with_context(cx, || waker.wake());
             }
             _ => {
                 panic!("already fulfilled")
@@ -128,8 +126,8 @@ fn get_save_result_fn<T>() -> OpaqueJsFulfillmentCallback {
 }
 
 impl<T> JsFuture<T> {
-    pub fn new<'a, C>(cx: &mut C, promise: Handle<'a, JsObject>, executor: Rc<RefCell<JsFutureExecutionContext>>, transform: JsFulfillmentCallback<T>) -> Pin<Box<Self>> where C: Context<'a> {
-        let cell = Cell::new(JsFutureInfo::new(transform, executor));
+    pub fn new<'a, C>(cx: &mut C, promise: Handle<'a, JsObject>, async_context: JsAsyncContext, transform: JsFulfillmentCallback<T>) -> Pin<Box<Self>> where C: Context<'a> {
+        let cell = Cell::new(JsFutureInfo::new(transform, async_context));
         let boxed = Box::pin(Self { info: cell, _pinned: PhantomPinned });
         let boxed_ptr = &(*boxed) as *const Self;
         let save_result_ptr = unsafe { std::mem::transmute::<_, *const ()>(get_save_result_fn::<T>()) };
@@ -161,10 +159,10 @@ impl<'a, 'b> CurrentContext for CurrentContextImpl<'a, 'b> {
     }
 }
 
-pub struct JsFutureExecutionContext {
+struct JsAsyncContextImpl {
     // This 'static is a lie that allows the JavaScript context to be accessed from arbitrary use sites.
     // Be very very careful that you do not persist this reference.
-    // Also do not share the 'static outside the implementation of JsFutureExecutionContext.
+    // Also do not share the 'static outside the implementation of JsAsyncContextImpl.
     very_unsafe_current_context: Option<&'static dyn CurrentContext>,
 
     num_pending_js_futures: i32,
@@ -190,42 +188,51 @@ where F: FnOnce(&RefCell<T>) {
 }
 
 
-impl JsFutureExecutionContext {
-    fn run_with_context<'a>(self_: &RefCell<Self>, cx: &mut FunctionContext<'a>, action: impl FnOnce()) {
+#[derive(Clone)]
+pub struct JsAsyncContext {
+    shared_state: Rc<RefCell<JsAsyncContextImpl>>
+}
+
+impl JsAsyncContext {
+    fn run_with_context(&self, cx: &mut FunctionContext, action: impl FnOnce()) {
         // While running, we use a RefCell to dynamically check access to the JS context.
-        // But a RefCell has to own its data. take_mut allows us to take the context out of its current reference and put it back later, like a more advanced version of std::mem::replace.
+        // But a RefCell has to own its data. as_ref_cell allows us to take the context out of its current reference and put it back later, like a more advanced version of std::mem::replace.
         as_ref_cell(cx, |cx| {
             let c = CurrentContextImpl { context: cx };
             // Lie about the lifetime of `c` so that it can be accessed from arbitrary call sites.
             // "This is advanced, very unsafe Rust!" - std::mem::transmute docs on lifetime extension.
             let opaque_c = unsafe { std::mem::transmute::<_, &'static dyn CurrentContext>(&c as &dyn CurrentContext) };
-            let prev_context = self_.borrow().very_unsafe_current_context;
-            self_.borrow_mut().very_unsafe_current_context = Some(opaque_c);
-            defer! { self_.borrow_mut().very_unsafe_current_context = prev_context };
+            let prev_context = self.shared_state.borrow().very_unsafe_current_context;
+            self.shared_state.borrow_mut().very_unsafe_current_context = Some(opaque_c);
+            defer! { self.shared_state.borrow_mut().very_unsafe_current_context = prev_context };
 
             action();
 
-            let maybe_pool = { self_.borrow_mut().pool.take() };
+            let maybe_pool = { self.shared_state.borrow_mut().pool.take() };
             if let Some(mut pool) = maybe_pool {
                 pool.run_until_stalled();
-                assert!(self_.borrow().complete || self_.borrow().num_pending_js_futures > 0, "only supports blocking on JavaScript futures");
-                self_.borrow_mut().pool = Some(pool);
+                assert!(self.shared_state.borrow().complete || self.shared_state.borrow().num_pending_js_futures > 0, "only supports blocking on JavaScript futures");
+                self.shared_state.borrow_mut().pool = Some(pool);
             } else {
                 // We're in a recursive call and the pool will continue to be processed when we return.
             }
         });
     }
 
-    fn register_future(&mut self) {
-        self.num_pending_js_futures += 1
+    fn register_future(&self) {
+        self.shared_state.borrow_mut().num_pending_js_futures += 1
     }
 
-    fn resolve_future(&mut self) {
-        self.num_pending_js_futures -= 1
+    fn resolve_future(&self) {
+        self.shared_state.borrow_mut().num_pending_js_futures -= 1
+    }
+
+    pub fn new() -> Self {
+        Self { shared_state: Rc::new(RefCell::new(JsAsyncContextImpl { very_unsafe_current_context: None, num_pending_js_futures: 0, complete: true, pool: Some(LocalPool::new()) })) }
     }
 
     pub fn with_context<R>(&self, mut callback: impl for<'a> FnMut(&mut FunctionContext<'a>) -> R) -> R {
-        let context_holder = self.very_unsafe_current_context.expect("cannot use the JS context outside of a JS call");
+        let context_holder = self.shared_state.borrow().very_unsafe_current_context.expect("cannot use the JS context outside of a JS call");
         let mut result = None;
         context_holder.with_context(&mut |cx| {
             result = Some(callback(cx))
@@ -233,16 +240,17 @@ impl JsFutureExecutionContext {
         result.unwrap() // The callback is always called; we just can't prove it to the compiler.
     }
 
-    pub fn new() -> Rc<RefCell<Self>> {
-        Rc::new(RefCell::new(Self { very_unsafe_current_context: None, num_pending_js_futures: 0, complete: true, pool: Some(LocalPool::new()) }))
+    pub fn run(self, cx: &mut FunctionContext, future: impl Future<Output = ()> + 'static) {
+        let spawner = self.shared_state.borrow().pool.as_ref().expect("should only be called at the top level of an operation").spawner();
+        let self_for_future = self.clone();
+        spawner.spawn_local(async move {
+            future.await;
+            self_for_future.shared_state.borrow_mut().complete = true;
+        }).expect("can spawn at the top level of an operation");
+        self.run_with_context(cx, || {});
     }
 
-    pub fn run<'a>(self_: Rc<RefCell<Self>>, cx: &mut FunctionContext<'a>, future: impl Future<Output = ()> + 'static) {
-        let self_for_future = self_.clone();
-        self_.borrow().pool.as_ref().unwrap().spawner().spawn_local(async move {
-            future.await;
-            self_for_future.borrow_mut().complete = true;
-        }).expect("cannot fail to spawn on a LocalPool");
-        Self::run_with_context(&self_, cx, || {});
+    pub fn unique_id(&self) -> usize {
+        self.shared_state.as_ptr() as usize
     }
 }
