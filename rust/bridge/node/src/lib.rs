@@ -82,13 +82,12 @@ impl JsSessionStore {
     }
 
     async fn perform_a(&self) -> String {
-        self.context.with_context(|cx| {
+        self.context.await_promise(|cx| {
             let store_object = self.context.get_context_data(cx, self.key).expect("exists");
             let op = store_object.get(cx, "a").expect("exists").downcast::<JsFunction>().expect("is function");
-            let promise = op.call(cx, store_object, std::iter::empty::<Handle<JsValue>>()).expect("success");
-            future::JsFuture::new(cx, promise.downcast().unwrap(), self.context.clone(), |_cx, handle| {
-                handle.downcast::<JsString>().expect("is string").value()
-            })
+            op.call(cx, store_object, std::iter::empty::<Handle<JsValue>>()).expect("success").downcast().expect("is object")
+        }).then(|_cx, handle| {
+            handle.downcast::<JsString>().expect("is string").value()
         }).await
     }
 }

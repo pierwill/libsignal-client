@@ -144,6 +144,18 @@ impl<T> JsFuture<T> {
     }
 }
 
+pub struct JsFutureBuilder<T> {
+    future: Pin<Box<JsFuture<T>>>
+}
+
+impl <T> JsFutureBuilder<T> {
+    pub fn then(self, transform: JsFulfillmentCallback<T>) -> Pin<Box<JsFuture<T>>> {
+        let async_context = self.future.info.replace(JsFutureInfo::consumed()).state.into_async_context();
+        self.future.info.set(JsFutureInfo::new(transform, async_context));
+        self.future
+    }
+}
+
 trait CurrentContext {
     fn with_context(&self, callback: &mut dyn for<'a> FnMut(&mut FunctionContext<'a>));
 }
@@ -296,6 +308,14 @@ impl JsAsyncContext {
         } else {
             context_storage.downcast().expect("context data accessed improperly somehow")
         }
+    }
+
+    pub fn await_promise<T>(&self, mut promise_callback: impl for<'a> FnMut(&mut FunctionContext<'a>) -> Handle<'a, JsObject>) -> JsFutureBuilder<T> {
+        let future = self.with_context(|cx| {
+            let promise = promise_callback(cx);
+            JsFuture::new(cx, promise, self.clone(), |_cx, _handle| panic!("no transform set yet")) // FIXME
+        });
+        JsFutureBuilder { future }
     }
 
     pub fn register_context_data<'a, T: neon::types::Value>(&self, cx: &mut FunctionContext<'a>, value: Handle<'a, T>) -> NeonResult<JsAsyncContextKey<T>> {
