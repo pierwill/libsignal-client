@@ -112,15 +112,12 @@ fn get_save_result_fn<T>() -> OpaqueJsFutureCallback {
 }
 
 impl<T> JsFuture<T> {
-    pub fn new<'a, C>(
-        cx: &mut C,
+    pub fn new<'a>(
+        cx: &mut FunctionContext<'a>,
         promise: Handle<'a, JsObject>,
         async_context: JsAsyncContext,
         transform: JsFutureCallback<T>,
-    ) -> Pin<Box<Self>>
-    where
-        C: Context<'a>,
-    {
+    ) -> Pin<Box<Self>> {
         let cell = Cell::new(JsFutureState::new(async_context, transform));
         let boxed = Box::pin(Self {
             state: cell,
@@ -129,14 +126,11 @@ impl<T> JsFuture<T> {
         let boxed_ptr = &(*boxed) as *const Self;
         let save_result_ptr = get_save_result_fn::<T>() as *const ();
 
-        fn bound_resolve_promise<'a, C, T, R: JsFutureResultConstructor>(
-            cx: &mut C,
+        fn bound_resolve_promise<'a, T, R: JsFutureResultConstructor>(
+            cx: &mut FunctionContext<'a>,
             boxed_ptr: *const T,
             save_result_ptr: *const (),
-        ) -> Handle<'a, JsValue>
-        where
-            C: Context<'a>,
-        {
+        ) -> Handle<'a, JsValue> {
             let resolve = JsFunction::new(cx, resolve_promise::<R>).expect("can create function");
             let bind = resolve
                 .get(cx, "bind")
@@ -152,9 +146,9 @@ impl<T> JsFuture<T> {
         }
 
         let bound_fulfill =
-            bound_resolve_promise::<_, _, JsFulfilledResult>(cx, boxed_ptr, save_result_ptr);
+            bound_resolve_promise::<_, JsFulfilledResult>(cx, boxed_ptr, save_result_ptr);
         let bound_reject =
-            bound_resolve_promise::<_, _, JsRejectedResult>(cx, boxed_ptr, save_result_ptr);
+            bound_resolve_promise::<_, JsRejectedResult>(cx, boxed_ptr, save_result_ptr);
 
         let then = promise
             .get(cx, "then")
