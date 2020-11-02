@@ -53,18 +53,29 @@ fn print_callback_result(mut cx: FunctionContext) -> JsResult<JsValue> {
     let future_context = future::JsAsyncContext::new();
 
     future_context.clone().run(&mut cx, async move {
-        let future = future_context.with_context(|cx| {
-            let callback = cx.global().get(cx, "__state").expect("bleh").downcast().expect("bleeeh");
-            future::JsFuture::new(cx, callback, future_context.clone(), |cx3, result| {
-                match result {
-                    Ok(handle) => handle.to_string(cx3).expect("can stringify").value(),
-                    Err(_) => panic!("unexpected JS error"),
-                }
-            })
-        });
+        let future =
+            future_context.with_context(|cx| {
+                let callback = cx
+                    .global()
+                    .get(cx, "__state")
+                    .expect("bleh")
+                    .downcast()
+                    .expect("bleeeh");
+                future::JsFuture::new(cx, callback, future_context.clone(), |cx3, result| {
+                    match result {
+                        Ok(handle) => handle.to_string(cx3).expect("can stringify").value(),
+                        Err(_) => panic!("unexpected JS error"),
+                    }
+                })
+            });
         let output: String = future.await;
         future_context.with_context(|cx| {
-            let callback = cx.global().get(cx, "__done").expect("bleh").downcast::<JsFunction>().expect("bleeeh");
+            let callback = cx
+                .global()
+                .get(cx, "__done")
+                .expect("bleh")
+                .downcast::<JsFunction>()
+                .expect("bleeeh");
             let null = cx.null();
             let args = vec![cx.string(format!("{0} {0}", output))];
             callback.call(cx, null, args).expect("ok");
@@ -74,36 +85,49 @@ fn print_callback_result(mut cx: FunctionContext) -> JsResult<JsValue> {
     Ok(cx.undefined().upcast())
 }
 
-
 struct JsSessionStore {
     context: future::JsAsyncContext,
     key: future::JsAsyncContextKey<JsObject>,
 }
 
 impl JsSessionStore {
-    fn new<'a>(cx: &mut FunctionContext<'a>, store: Handle<'a, JsObject>, context: future::JsAsyncContext) -> NeonResult<Self> {
+    fn new<'a>(
+        cx: &mut FunctionContext<'a>,
+        store: Handle<'a, JsObject>,
+        context: future::JsAsyncContext,
+    ) -> NeonResult<Self> {
         let key = context.register_context_data(cx, store)?;
         Ok(Self { context, key })
     }
 
     async fn perform_a(&self) -> String {
-        self.context.await_promise(|cx| {
-            let store_object = self.context.get_context_data(cx, self.key).expect("exists");
-            let op = store_object.get(cx, "a").expect("exists").downcast::<JsFunction>().expect("is function");
-            op.call(cx, store_object, std::iter::empty::<Handle<JsValue>>()).expect("success").downcast().expect("is object")
-        }).then(|_cx, result| {
-            match result {
+        self.context
+            .await_promise(|cx| {
+                let store_object = self.context.get_context_data(cx, self.key).expect("exists");
+                let op = store_object
+                    .get(cx, "a")
+                    .expect("exists")
+                    .downcast::<JsFunction>()
+                    .expect("is function");
+                op.call(cx, store_object, std::iter::empty::<Handle<JsValue>>())
+                    .expect("success")
+                    .downcast()
+                    .expect("is object")
+            })
+            .then(|_cx, result| match result {
                 Ok(handle) => handle.downcast::<JsString>().expect("is string").value(),
-                Err(handle) => format!("error: {}", handle.downcast::<JsString>().expect("is string").value()),
-            }
-        }).await
+                Err(handle) => format!(
+                    "error: {}",
+                    handle.downcast::<JsString>().expect("is string").value()
+                ),
+            })
+            .await
     }
 }
 
 async fn use_store_impl(store: JsSessionStore) {
     eprintln!("{}", store.perform_a().await);
 }
-
 
 fn use_store(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     let store = cx.argument(0)?;
