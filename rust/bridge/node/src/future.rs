@@ -38,18 +38,17 @@ impl JsFutureResultConstructor for JsRejectedResult {
     }
 }
 
-pub type JsFulfillmentCallback<T> = for<'a> fn(&mut FunctionContext<'a>, JsFutureResult<'a>) -> T;
-type OpaqueJsFulfillmentCallback =
-    for<'a> fn(&mut FunctionContext<'a>, JsFutureResult<'a>, *const ());
+pub type JsFutureCallback<T> = for<'a> fn(&mut FunctionContext<'a>, JsFutureResult<'a>) -> T;
+type OpaqueJsFutureCallback = for<'a> fn(&mut FunctionContext<'a>, JsFutureResult<'a>, *const ());
 
 enum JsFutureState<T> {
-    Waiting(JsAsyncContext, JsFulfillmentCallback<T>, Option<Waker>),
+    Waiting(JsAsyncContext, JsFutureCallback<T>, Option<Waker>),
     Complete(T),
     Consumed,
 }
 
 impl<T> JsFutureState<T> {
-    fn new(context: JsAsyncContext, transform: JsFulfillmentCallback<T>) -> Self {
+    fn new(context: JsAsyncContext, transform: JsFutureCallback<T>) -> Self {
         Self::Waiting(context, transform, None)
     }
 
@@ -87,13 +86,12 @@ fn resolve_promise<R: JsFutureResultConstructor>(mut cx: FunctionContext) -> JsR
     let result = cx.argument(2)?;
     let cell_ptr = cx.argument::<JsNumber>(1)?.value() as u64 as *const ();
     let save_result_ptr = cx.argument::<JsNumber>(0)?.value() as u64 as *const ();
-    let save_result =
-        unsafe { std::mem::transmute::<_, OpaqueJsFulfillmentCallback>(save_result_ptr) };
+    let save_result = unsafe { std::mem::transmute::<_, OpaqueJsFutureCallback>(save_result_ptr) };
     save_result(&mut cx, R::make(result), cell_ptr);
     Ok(cx.undefined())
 }
 
-fn get_save_result_fn<T>() -> OpaqueJsFulfillmentCallback {
+fn get_save_result_fn<T>() -> OpaqueJsFutureCallback {
     |cx, js_result, opaque_ptr| {
         let future = unsafe { (opaque_ptr as *const JsFuture<T>).as_ref().unwrap() };
         let state = future.state.replace(JsFutureState::Consumed);
@@ -118,7 +116,7 @@ impl<T> JsFuture<T> {
         cx: &mut C,
         promise: Handle<'a, JsObject>,
         async_context: JsAsyncContext,
-        transform: JsFulfillmentCallback<T>,
+        transform: JsFutureCallback<T>,
     ) -> Pin<Box<Self>>
     where
         C: Context<'a>,
@@ -175,7 +173,7 @@ pub struct JsFutureBuilder<T> {
 }
 
 impl<T> JsFutureBuilder<T> {
-    pub fn then(self, transform: JsFulfillmentCallback<T>) -> Pin<Box<JsFuture<T>>> {
+    pub fn then(self, transform: JsFutureCallback<T>) -> Pin<Box<JsFuture<T>>> {
         if let JsFutureState::Waiting(async_context, _, None) =
             self.future.state.replace(JsFutureState::Consumed)
         {
