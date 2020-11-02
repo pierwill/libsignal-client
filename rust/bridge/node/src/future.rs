@@ -168,9 +168,8 @@ pub struct JsFutureBuilder<T> {
 
 impl<T> JsFutureBuilder<T> {
     pub fn then(self, transform: JsFutureCallback<T>) -> Pin<Box<JsFuture<T>>> {
-        if let JsFutureState::Waiting(async_context, _, None) =
-            self.future.state.replace(JsFutureState::Consumed)
-        {
+        let state = self.future.state.replace(JsFutureState::Consumed);
+        if let JsFutureState::Waiting(async_context, _, None) = state {
             self.future
                 .state
                 .set(JsFutureState::new(async_context, transform));
