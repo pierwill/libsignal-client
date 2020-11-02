@@ -243,7 +243,8 @@ where
 #[derive(Clone, Copy)]
 pub struct JsAsyncContextKey<T: neon::types::Value> {
     raw_key: u32,
-    _type: PhantomData<T>,
+    // https://doc.rust-lang.org/std/marker/struct.PhantomData.html#ownership-and-the-drop-check
+    _type: PhantomData<*const T>,
 }
 
 #[derive(Clone)]
