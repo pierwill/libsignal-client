@@ -20,59 +20,28 @@ type JsFulfillmentCallback<T> = for<'a> fn(&mut FunctionContext<'a>, Handle<'a, 
 type OpaqueJsFulfillmentCallback = for<'a> fn(&mut FunctionContext<'a>, Handle<'a, JsValue>, *const());
 
 enum JsFutureState<T> {
-    Started(JsAsyncContext),
-    Waiting(JsAsyncContext, Waker),
+    Waiting(JsAsyncContext, JsFulfillmentCallback<T>, Option<Waker>),
     Complete(T),
     Consumed,
 }
 
 impl<T> JsFutureState<T> {
-    fn into_async_context(self) -> JsAsyncContext {
-        match self {
-            JsFutureState::Started(context) | JsFutureState::Waiting(context, _) => context,
-            JsFutureState::Complete(_) | JsFutureState::Consumed => panic!("already completed"),
-        }
-    }
-}
-
-struct JsFutureInfo<T> {
-    transform: JsFulfillmentCallback<T>,
-    state: JsFutureState<T>,
-}
-
-impl<T> JsFutureInfo<T> {
-    fn new(transform: JsFulfillmentCallback<T>, context: JsAsyncContext) -> Self {
-        Self {
-            transform,
-            state: JsFutureState::Started(context),
-        }
+    fn new(context: JsAsyncContext, transform: JsFulfillmentCallback<T>) -> Self {
+        Self::Waiting(context, transform, None)
     }
 
     fn waiting_on(self, waker: Waker) -> Self {
-        Self {
-            transform: self.transform,
-            state: JsFutureState::Waiting(self.state.into_async_context(), waker),
-        }
-    }
-
-    fn complete(value: T) -> Self {
-        Self {
-            transform: |_cx, _handle| panic!("already completed"),
-            state: JsFutureState::Complete(value),
-        }
-    }
-
-    fn consumed() -> Self {
-        Self {
-            transform: |_cx, _handle| panic!("already consumed"),
-            state: JsFutureState::Consumed,
+        if let Self::Waiting(context, transform, _) = self {
+            Self::Waiting(context, transform, Some(waker))
+        } else {
+            panic!("already completed")
         }
     }
 }
 
 
 pub struct JsFuture<T> {
-    info: Cell<JsFutureInfo<T>>,
+    state: Cell<JsFutureState<T>>,
     _pinned: PhantomPinned,
 }
 
@@ -80,14 +49,14 @@ impl <T> Future for JsFuture<T> {
     type Output = T;
 
     fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context) -> Poll<Self::Output> {
-        let info = self.info.replace(JsFutureInfo::consumed());
-        match info.state {
+        let state = self.state.replace(JsFutureState::Consumed);
+        match state {
             JsFutureState::Complete(result) => return Poll::Ready(result),
             JsFutureState::Consumed => panic!("already consumed"),
-            JsFutureState::Started(ref async_context) => async_context.register_future(),
-            JsFutureState::Waiting(_, _) => {}
+            JsFutureState::Waiting(ref async_context, _, None) => async_context.register_future(),
+            JsFutureState::Waiting(_, _, _) => {}
         }
-        self.info.set(info.waiting_on(cx.waker().clone()));
+        self.state.set(state.waiting_on(cx.waker().clone()));
         Poll::Pending
     }
 }
@@ -104,30 +73,27 @@ fn fulfill(mut cx: FunctionContext) -> JsResult<JsUndefined> {
 fn get_save_result_fn<T>() -> OpaqueJsFulfillmentCallback {
     return |cx, js_result, opaque_ptr| {
         let future = unsafe { (opaque_ptr as *const JsFuture<T>).as_ref().unwrap() };
-        let info = future.info.replace(JsFutureInfo::consumed());
-        let result = (info.transform)(cx, js_result);
-        future.info.set(JsFutureInfo::complete(result));
+        let state = future.state.replace(JsFutureState::Consumed);
 
-        match info.state {
-            JsFutureState::Started(async_context) => {
-                async_context.resolve_future();
-                async_context.run_with_context(cx, || {});
-            }
-            JsFutureState::Waiting(async_context, waker) => {
-                async_context.resolve_future();
-                async_context.run_with_context(cx, || waker.wake());
-            }
-            _ => {
-                panic!("already fulfilled")
-            }
+        if let JsFutureState::Waiting(async_context, transform, waker) = state {
+            let result = transform(cx, js_result);
+            future.state.set(JsFutureState::Complete(result));
+            async_context.resolve_future();
+            async_context.run_with_context(cx, || {
+                if let Some(waker) = waker {
+                    waker.wake()
+                }
+            });
+        } else {
+            panic!("already fulfilled");
         }
     }
 }
 
 impl<T> JsFuture<T> {
     pub fn new<'a, C>(cx: &mut C, promise: Handle<'a, JsObject>, async_context: JsAsyncContext, transform: JsFulfillmentCallback<T>) -> Pin<Box<Self>> where C: Context<'a> {
-        let cell = Cell::new(JsFutureInfo::new(transform, async_context));
-        let boxed = Box::pin(Self { info: cell, _pinned: PhantomPinned });
+        let cell = Cell::new(JsFutureState::new(async_context, transform));
+        let boxed = Box::pin(Self { state: cell, _pinned: PhantomPinned });
         let boxed_ptr = &(*boxed) as *const Self;
         let save_result_ptr = unsafe { std::mem::transmute::<_, *const ()>(get_save_result_fn::<T>()) };
 
@@ -150,9 +116,12 @@ pub struct JsFutureBuilder<T> {
 
 impl <T> JsFutureBuilder<T> {
     pub fn then(self, transform: JsFulfillmentCallback<T>) -> Pin<Box<JsFuture<T>>> {
-        let async_context = self.future.info.replace(JsFutureInfo::consumed()).state.into_async_context();
-        self.future.info.set(JsFutureInfo::new(transform, async_context));
-        self.future
+        if let JsFutureState::Waiting(async_context, _, None) = self.future.state.replace(JsFutureState::Consumed) {
+            self.future.state.set(JsFutureState::new(async_context, transform));
+            self.future
+        } else {
+            panic!("then() must be called immediately after await_promise()")
+        }
     }
 }
 
@@ -205,8 +174,9 @@ where F: FnOnce(&RefCell<T>) {
     use std::ptr;
 
     unsafe {
-        let cell = RefCell::new(ptr::read(mut_ref));
+        let mut cell = RefCell::new(ptr::read(mut_ref));
         let result = panic::catch_unwind(panic::AssertUnwindSafe(|| closure(&cell)));
+        cell.undo_leak();
         ptr::write(mut_ref, cell.into_inner());
         if let Err(err) = result {
             panic::resume_unwind(err);
@@ -233,17 +203,17 @@ impl JsAsyncContext {
             let c = CurrentContextImpl { context: cx };
             // Lie about the lifetime of `c` so that it can be accessed from arbitrary call sites.
             // "This is advanced, very unsafe Rust!" - std::mem::transmute docs on lifetime extension.
-            let opaque_c = unsafe { std::mem::transmute::<_, &'static dyn CurrentContext>(&c as &dyn CurrentContext) };
-            let prev_context = self.shared_state.borrow().very_unsafe_current_context;
-            self.shared_state.borrow_mut().very_unsafe_current_context = Some(opaque_c);
+            let opaque_c = unsafe { std::mem::transmute::<&dyn CurrentContext, &'static dyn CurrentContext>(&c) };
+            let prev_context = self.shared_state.borrow_mut().very_unsafe_current_context.replace(opaque_c);
 
             action();
 
             let maybe_pool = self.shared_state.borrow_mut().pool.take();
             if let Some(mut pool) = maybe_pool {
                 pool.run_until_stalled();
-                assert!(self.shared_state.borrow().complete || self.shared_state.borrow().num_pending_js_futures > 0, "only supports blocking on JavaScript futures");
-                self.shared_state.borrow_mut().pool = Some(pool);
+                let mut shared_state = self.shared_state.borrow_mut();
+                assert!(shared_state.complete || shared_state.num_pending_js_futures > 0, "only supports blocking on JavaScript futures");
+                shared_state.pool = Some(pool);
             } else {
                 // We're in a recursive call and the pool will continue to be processed when we return.
             }

@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 
+#![feature(cell_leak)]
+
 use libsignal_protocol_rust::*;
 use neon::context::Context;
 use neon::prelude::*;
