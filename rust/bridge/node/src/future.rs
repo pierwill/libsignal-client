@@ -16,8 +16,30 @@ use std::panic;
 use futures::executor::LocalPool;
 use futures::task::LocalSpawnExt;
 
-type JsFulfillmentCallback<T> = for<'a> fn(&mut FunctionContext<'a>, Handle<'a, JsValue>) -> T;
-type OpaqueJsFulfillmentCallback = for<'a> fn(&mut FunctionContext<'a>, Handle<'a, JsValue>, *const());
+pub type JsFutureResult<'a> = Result<Handle<'a, JsValue>, Handle<'a, JsValue>>;
+
+trait JsFutureResultConstructor {
+    fn make<'a>(value: Handle<'a, JsValue>) -> JsFutureResult<'a>;
+}
+
+struct JsFulfilledResult;
+
+impl JsFutureResultConstructor for JsFulfilledResult {
+    fn make<'a>(value: Handle<'a, JsValue>) -> JsFutureResult<'a> {
+        Ok(value)
+    }
+}
+
+struct JsRejectedResult;
+
+impl JsFutureResultConstructor for JsRejectedResult {
+    fn make<'a>(value: Handle<'a, JsValue>) -> JsFutureResult<'a> {
+        Err(value)
+    }
+}
+
+pub type JsFulfillmentCallback<T> = for<'a> fn(&mut FunctionContext<'a>, JsFutureResult<'a>) -> T;
+type OpaqueJsFulfillmentCallback = for<'a> fn(&mut FunctionContext<'a>, JsFutureResult<'a>, *const());
 
 enum JsFutureState<T> {
     Waiting(JsAsyncContext, JsFulfillmentCallback<T>, Option<Waker>),
@@ -61,12 +83,12 @@ impl <T> Future for JsFuture<T> {
     }
 }
 
-fn fulfill(mut cx: FunctionContext) -> JsResult<JsUndefined> {
+fn resolve_promise<R: JsFutureResultConstructor>(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     let result = cx.argument(2)?;
     let cell_ptr = cx.argument::<JsNumber>(1)?.value() as u64 as *const ();
     let save_result_ptr = cx.argument::<JsNumber>(0)?.value() as u64 as *const ();
     let save_result = unsafe { std::mem::transmute::<_, OpaqueJsFulfillmentCallback>(save_result_ptr) };
-    save_result(&mut cx, result, cell_ptr);
+    save_result(&mut cx, R::make(result), cell_ptr);
     Ok(cx.undefined())
 }
 
@@ -97,14 +119,18 @@ impl<T> JsFuture<T> {
         let boxed_ptr = &(*boxed) as *const Self;
         let save_result_ptr = unsafe { std::mem::transmute::<_, *const ()>(get_save_result_fn::<T>()) };
 
-        let fulfill = JsFunction::new(cx, fulfill).expect("can create function");
-        let bind = fulfill.get(cx, "bind").expect("bind() exists").downcast::<JsFunction>().expect("bind() is a function");
-        let bind_args = vec![cx.undefined().upcast::<JsValue>(), cx.number(save_result_ptr as u64 as f64).upcast(), cx.number(boxed_ptr as u64 as f64).upcast()];
-        let bound_fulfill = bind.call(cx, fulfill, bind_args).expect("can call bind()");
+        fn bound_resolve_promise<'a, C, T, R: JsFutureResultConstructor>(cx: &mut C, boxed_ptr: *const T, save_result_ptr: *const()) -> Handle<'a, JsValue> where C: Context<'a> {
+            let resolve = JsFunction::new(cx, resolve_promise::<R>).expect("can create function");
+            let bind = resolve.get(cx, "bind").expect("bind() exists").downcast::<JsFunction>().expect("bind() is a function");
+            let bind_args = vec![cx.undefined().upcast::<JsValue>(), cx.number(save_result_ptr as u64 as f64).upcast(), cx.number(boxed_ptr as u64 as f64).upcast()];
+            bind.call(cx, resolve, bind_args).expect("can call bind()")
+        }
+
+        let bound_fulfill = bound_resolve_promise::<_, _, JsFulfilledResult>(cx, boxed_ptr, save_result_ptr);
+        let bound_reject = bound_resolve_promise::<_, _, JsRejectedResult>(cx, boxed_ptr, save_result_ptr);
 
         let then = promise.get(cx, "then").expect("then() exists").downcast::<JsFunction>().expect("then() is a function");
-        let null = cx.null();
-        then.call(cx, promise, vec![bound_fulfill.upcast::<JsValue>(), null.upcast()]).expect("can call then()");
+        then.call(cx, promise, vec![bound_fulfill, bound_reject]).expect("can call then()");
 
         boxed
     }

@@ -55,8 +55,11 @@ fn print_callback_result(mut cx: FunctionContext) -> JsResult<JsValue> {
     future_context.clone().run(&mut cx, async move {
         let future = future_context.with_context(|cx| {
             let callback = cx.global().get(cx, "__state").expect("bleh").downcast().expect("bleeeh");
-            future::JsFuture::new(cx, callback, future_context.clone(), |cx3, handle| {
-                handle.to_string(cx3).expect("can stringify").value()
+            future::JsFuture::new(cx, callback, future_context.clone(), |cx3, result| {
+                match result {
+                    Ok(handle) => handle.to_string(cx3).expect("can stringify").value(),
+                    Err(_) => panic!("unexpected JS error"),
+                }
             })
         });
         let output: String = future.await;
@@ -88,8 +91,11 @@ impl JsSessionStore {
             let store_object = self.context.get_context_data(cx, self.key).expect("exists");
             let op = store_object.get(cx, "a").expect("exists").downcast::<JsFunction>().expect("is function");
             op.call(cx, store_object, std::iter::empty::<Handle<JsValue>>()).expect("success").downcast().expect("is object")
-        }).then(|_cx, handle| {
-            handle.downcast::<JsString>().expect("is string").value()
+        }).then(|_cx, result| {
+            match result {
+                Ok(handle) => handle.downcast::<JsString>().expect("is string").value(),
+                Err(handle) => format!("error: {}", handle.downcast::<JsString>().expect("is string").value()),
+            }
         }).await
     }
 }
