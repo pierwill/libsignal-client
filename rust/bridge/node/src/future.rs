@@ -39,7 +39,6 @@ impl JsFutureResultConstructor for JsRejectedResult {
 }
 
 pub type JsFutureCallback<T> = for<'a> fn(&mut FunctionContext<'a>, JsFutureResult<'a>) -> T;
-type OpaqueJsFutureCallback = for<'a> fn(&mut FunctionContext<'a>, JsFutureResult<'a>, *const ());
 
 enum JsFutureState<T> {
     Waiting(JsAsyncContext, JsFutureCallback<T>, Option<Waker>),
@@ -82,33 +81,28 @@ impl<T> Future for JsFuture<T> {
     }
 }
 
-fn resolve_promise<R: JsFutureResultConstructor>(mut cx: FunctionContext) -> JsResult<JsUndefined> {
-    let result = cx.argument(2)?;
-    let cell_ptr = cx.argument::<JsNumber>(1)?.value() as u64 as *const ();
-    let save_result_ptr = cx.argument::<JsNumber>(0)?.value() as u64 as *const ();
-    let save_result = unsafe { std::mem::transmute::<_, OpaqueJsFutureCallback>(save_result_ptr) };
-    save_result(&mut cx, R::make(result), cell_ptr);
-    Ok(cx.undefined())
-}
+fn resolve_promise<T, R: JsFutureResultConstructor>(
+    mut cx: FunctionContext,
+) -> JsResult<JsUndefined> {
+    let js_result = cx.argument(1)?;
+    let opaque_ptr = cx.argument::<JsNumber>(0)?.value() as u64 as *const ();
+    let future = unsafe { (opaque_ptr as *const JsFuture<T>).as_ref().unwrap() };
+    let state = future.state.replace(JsFutureState::Consumed);
 
-fn get_save_result_fn<T>() -> OpaqueJsFutureCallback {
-    |cx, js_result, opaque_ptr| {
-        let future = unsafe { (opaque_ptr as *const JsFuture<T>).as_ref().unwrap() };
-        let state = future.state.replace(JsFutureState::Consumed);
-
-        if let JsFutureState::Waiting(async_context, transform, waker) = state {
-            let result = transform(cx, js_result);
-            future.state.set(JsFutureState::Complete(result));
-            async_context.resolve_future();
-            async_context.run_with_context(cx, || {
-                if let Some(waker) = waker {
-                    waker.wake()
-                }
-            });
-        } else {
-            panic!("already fulfilled");
-        }
+    if let JsFutureState::Waiting(async_context, transform, waker) = state {
+        let result = transform(&mut cx, R::make(js_result));
+        future.state.set(JsFutureState::Complete(result));
+        async_context.resolve_future();
+        async_context.run_with_context(&mut cx, || {
+            if let Some(waker) = waker {
+                waker.wake()
+            }
+        });
+    } else {
+        panic!("already fulfilled");
     }
+
+    Ok(cx.undefined())
 }
 
 impl<T> JsFuture<T> {
@@ -124,14 +118,13 @@ impl<T> JsFuture<T> {
             _pinned: PhantomPinned,
         });
         let boxed_ptr = &(*boxed) as *const Self;
-        let save_result_ptr = get_save_result_fn::<T>() as *const ();
 
         fn bound_resolve_promise<'a, T, R: JsFutureResultConstructor>(
             cx: &mut FunctionContext<'a>,
             boxed_ptr: *const T,
-            save_result_ptr: *const (),
         ) -> Handle<'a, JsValue> {
-            let resolve = JsFunction::new(cx, resolve_promise::<R>).expect("can create function");
+            let resolve =
+                JsFunction::new(cx, resolve_promise::<T, R>).expect("can create function");
             let bind = resolve
                 .get(cx, "bind")
                 .expect("bind() exists")
@@ -139,16 +132,13 @@ impl<T> JsFuture<T> {
                 .expect("bind() is a function");
             let bind_args = vec![
                 cx.undefined().upcast::<JsValue>(),
-                cx.number(save_result_ptr as u64 as f64).upcast(),
                 cx.number(boxed_ptr as u64 as f64).upcast(),
             ];
             bind.call(cx, resolve, bind_args).expect("can call bind()")
         }
 
-        let bound_fulfill =
-            bound_resolve_promise::<_, JsFulfilledResult>(cx, boxed_ptr, save_result_ptr);
-        let bound_reject =
-            bound_resolve_promise::<_, JsRejectedResult>(cx, boxed_ptr, save_result_ptr);
+        let bound_fulfill = bound_resolve_promise::<_, JsFulfilledResult>(cx, boxed_ptr);
+        let bound_reject = bound_resolve_promise::<_, JsRejectedResult>(cx, boxed_ptr);
 
         let then = promise
             .get(cx, "then")
