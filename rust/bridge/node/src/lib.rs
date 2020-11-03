@@ -9,7 +9,7 @@ use libsignal_protocol_rust::*;
 use neon::context::Context;
 use neon::prelude::*;
 
-mod future;
+mod futures;
 
 pub(crate) fn borrow_this<'a, V, T, F>(cx: &mut MethodContext<'a, V>, f: F) -> T
 where
@@ -50,7 +50,7 @@ fn print_callback_result(mut cx: FunctionContext) -> JsResult<JsValue> {
     global.set(&mut cx, "__state", callback)?;
     global.set(&mut cx, "__done", done)?;
 
-    let future_context = future::JsAsyncContext::new();
+    let future_context = futures::JsAsyncContext::new();
 
     future_context.clone().run(&mut cx, async move {
         let future =
@@ -61,7 +61,7 @@ fn print_callback_result(mut cx: FunctionContext) -> JsResult<JsValue> {
                     .expect("bleh")
                     .downcast()
                     .expect("bleeeh");
-                future::JsFuture::new(cx, callback, future_context.clone(), |cx3, result| {
+                futures::JsFuture::new(cx, callback, future_context.clone(), |cx3, result| {
                     match result {
                         Ok(handle) => handle.to_string(cx3).expect("can stringify").value(),
                         Err(_) => panic!("unexpected JS error"),
@@ -86,15 +86,15 @@ fn print_callback_result(mut cx: FunctionContext) -> JsResult<JsValue> {
 }
 
 struct JsSessionStore {
-    context: future::JsAsyncContext,
-    key: future::JsAsyncContextKey<JsObject>,
+    context: futures::JsAsyncContext,
+    key: futures::JsAsyncContextKey<JsObject>,
 }
 
 impl JsSessionStore {
     fn new<'a>(
         cx: &mut FunctionContext<'a>,
         store: Handle<'a, JsObject>,
-        context: future::JsAsyncContext,
+        context: futures::JsAsyncContext,
     ) -> NeonResult<Self> {
         let key = context.register_context_data(cx, store)?;
         Ok(Self { context, key })
@@ -132,7 +132,7 @@ async fn use_store_impl(store: JsSessionStore) {
 fn use_store(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     let store = cx.argument(0)?;
 
-    let future_context = future::JsAsyncContext::new();
+    let future_context = futures::JsAsyncContext::new();
 
     let store = JsSessionStore::new(&mut cx, store, future_context.clone())?;
 

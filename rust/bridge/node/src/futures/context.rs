@@ -8,149 +8,14 @@
 use futures::executor::LocalPool;
 use futures::task::LocalSpawnExt;
 use neon::prelude::*;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::future::Future;
 use std::marker::{PhantomData, PhantomPinned};
 use std::panic;
 use std::pin::Pin;
 use std::rc::Rc;
-use std::task::{Poll, Waker};
 
-pub type JsFutureResult<'a> = Result<Handle<'a, JsValue>, Handle<'a, JsValue>>;
-
-trait JsFutureResultConstructor {
-    fn make(value: Handle<JsValue>) -> JsFutureResult;
-}
-
-struct JsFulfilledResult;
-
-impl JsFutureResultConstructor for JsFulfilledResult {
-    fn make(value: Handle<JsValue>) -> JsFutureResult {
-        Ok(value)
-    }
-}
-
-struct JsRejectedResult;
-
-impl JsFutureResultConstructor for JsRejectedResult {
-    fn make(value: Handle<JsValue>) -> JsFutureResult {
-        Err(value)
-    }
-}
-
-pub type JsFutureCallback<T> = for<'a> fn(&mut FunctionContext<'a>, JsFutureResult<'a>) -> T;
-
-enum JsFutureState<T> {
-    Waiting(JsAsyncContext, JsFutureCallback<T>, Option<Waker>),
-    Complete(T),
-    Consumed,
-}
-
-impl<T> JsFutureState<T> {
-    fn new(context: JsAsyncContext, transform: JsFutureCallback<T>) -> Self {
-        Self::Waiting(context, transform, None)
-    }
-
-    fn waiting_on(self, waker: Waker) -> Self {
-        if let Self::Waiting(context, transform, _) = self {
-            Self::Waiting(context, transform, Some(waker))
-        } else {
-            panic!("already completed")
-        }
-    }
-}
-
-pub struct JsFuture<T> {
-    state: Cell<JsFutureState<T>>,
-    _pinned: PhantomPinned,
-}
-
-impl<T> Future for JsFuture<T> {
-    type Output = T;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context) -> Poll<Self::Output> {
-        let state = self.state.replace(JsFutureState::Consumed);
-        match state {
-            JsFutureState::Complete(result) => return Poll::Ready(result),
-            JsFutureState::Consumed => panic!("already consumed"),
-            JsFutureState::Waiting(ref async_context, _, None) => async_context.register_future(),
-            JsFutureState::Waiting(_, _, _) => {}
-        }
-        self.state.set(state.waiting_on(cx.waker().clone()));
-        Poll::Pending
-    }
-}
-
-fn resolve_promise<T, R: JsFutureResultConstructor>(
-    mut cx: FunctionContext,
-) -> JsResult<JsUndefined> {
-    let js_result = cx.argument(1)?;
-    let opaque_ptr = cx.argument::<JsNumber>(0)?.value() as u64 as *const ();
-    let future = unsafe { (opaque_ptr as *const JsFuture<T>).as_ref().unwrap() };
-    let state = future.state.replace(JsFutureState::Consumed);
-
-    if let JsFutureState::Waiting(async_context, transform, waker) = state {
-        let result = transform(&mut cx, R::make(js_result));
-        future.state.set(JsFutureState::Complete(result));
-        async_context.resolve_future();
-        async_context.run_with_context(&mut cx, || {
-            if let Some(waker) = waker {
-                waker.wake()
-            }
-        });
-    } else {
-        panic!("already fulfilled");
-    }
-
-    Ok(cx.undefined())
-}
-
-impl<T> JsFuture<T> {
-    pub fn new<'a>(
-        cx: &mut FunctionContext<'a>,
-        promise: Handle<'a, JsObject>,
-        async_context: JsAsyncContext,
-        transform: JsFutureCallback<T>,
-    ) -> Pin<Box<Self>> {
-        let cell = Cell::new(JsFutureState::new(async_context, transform));
-        let boxed = Box::pin(Self {
-            state: cell,
-            _pinned: PhantomPinned,
-        });
-        let boxed_ptr = &(*boxed) as *const Self;
-
-        fn bound_resolve_promise<'a, T, R: JsFutureResultConstructor>(
-            cx: &mut FunctionContext<'a>,
-            boxed_ptr: *const T,
-        ) -> Handle<'a, JsValue> {
-            let resolve =
-                JsFunction::new(cx, resolve_promise::<T, R>).expect("can create function");
-            let bind = resolve
-                .get(cx, "bind")
-                .expect("bind() exists")
-                .downcast::<JsFunction>()
-                .expect("bind() is a function");
-            let bind_args = vec![
-                cx.undefined().upcast::<JsValue>(),
-                cx.number(boxed_ptr as u64 as f64).upcast(),
-            ];
-            bind.call(cx, resolve, bind_args).expect("can call bind()")
-        }
-
-        let bound_fulfill = bound_resolve_promise::<_, JsFulfilledResult>(cx, boxed_ptr);
-        let bound_reject = bound_resolve_promise::<_, JsRejectedResult>(cx, boxed_ptr);
-
-        let then = promise
-            .get(cx, "then")
-            .expect("then() exists")
-            .downcast::<JsFunction>()
-            .expect("then() is a function");
-        then.call(cx, promise, vec![bound_fulfill, bound_reject])
-            .expect("can call then()");
-
-        boxed
-    }
-}
+use crate::futures::future::*;
 
 pub struct JsFutureBuilder<T> {
     future: Pin<Box<JsFuture<T>>>,
@@ -158,15 +23,10 @@ pub struct JsFutureBuilder<T> {
 
 impl<T> JsFutureBuilder<T> {
     pub fn then(self, transform: JsFutureCallback<T>) -> Pin<Box<JsFuture<T>>> {
-        let state = self.future.state.replace(JsFutureState::Consumed);
-        if let JsFutureState::Waiting(async_context, _, None) = state {
-            self.future
-                .state
-                .set(JsFutureState::new(async_context, transform));
-            self.future
-        } else {
-            panic!("then() must be called immediately after await_promise()")
-        }
+        let mut state = self.future.state.replace(JsFutureState::Consumed);
+        state.set_transform(transform);
+        self.future.state.set(state);
+        self.future
     }
 }
 
@@ -243,7 +103,11 @@ pub struct JsAsyncContext {
 }
 
 impl JsAsyncContext {
-    fn run_with_context(self, cx: &mut FunctionContext, action: impl FnOnce()) {
+    pub(in crate::futures) fn run_with_context(
+        self,
+        cx: &mut FunctionContext,
+        action: impl FnOnce(),
+    ) {
         // While running, we use a RefCell to dynamically check access to the JS context.
         // But a RefCell has to own its data. as_ref_cell allows us to take the context out of its current reference and put it back later, like a more advanced version of std::mem::replace.
         as_ref_cell(cx, |cx| {
@@ -286,11 +150,11 @@ impl JsAsyncContext {
         });
     }
 
-    fn register_future(&self) {
+    pub(in crate::futures) fn register_future(&self) {
         self.shared_state.borrow_mut().num_pending_js_futures += 1
     }
 
-    fn resolve_future(&self) {
+    pub(in crate::futures) fn resolve_future(&self) {
         self.shared_state.borrow_mut().num_pending_js_futures -= 1
     }
 
