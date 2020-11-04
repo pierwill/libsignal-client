@@ -264,3 +264,9 @@ impl JsAsyncContext {
             .downcast_or_throw(cx)
     }
 }
+
+impl Default for JsAsyncContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
