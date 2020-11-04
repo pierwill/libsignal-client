@@ -1,8 +1,6 @@
 //
-// Copyright (C) 2020 Signal Messenger, LLC.
-// All rights reserved.
-//
-// SPDX-License-Identifier: GPL-3.0-only
+// Copyright 2020 Signal Messenger, LLC.
+// SPDX-License-Identifier: AGPL-3.0-only
 //
 
 use neon::prelude::*;
@@ -12,12 +10,12 @@ use std::marker::PhantomPinned;
 use std::pin::Pin;
 use std::task::{Poll, Waker};
 
-use crate::futures::result::*;
-use crate::futures::JsAsyncContext;
+use crate::result::*;
+use crate::JsAsyncContext;
 
 pub type JsFutureCallback<T> = for<'a> fn(&mut FunctionContext<'a>, JsFutureResult<'a>) -> T;
 
-pub(in crate::futures) enum JsFutureState<T> {
+pub(crate) enum JsFutureState<T> {
     Waiting(JsAsyncContext, JsFutureCallback<T>, Option<Waker>),
     Complete(T),
     Consumed,
@@ -28,7 +26,7 @@ impl<T> JsFutureState<T> {
         Self::Waiting(context, transform, None)
     }
 
-    pub(in crate::futures) fn set_transform(&mut self, new_transform: JsFutureCallback<T>) {
+    pub(crate) fn set_transform(&mut self, new_transform: JsFutureCallback<T>) {
         if let Self::Waiting(_, ref mut transform, _) = self {
             *transform = new_transform;
         } else {
@@ -46,7 +44,7 @@ impl<T> JsFutureState<T> {
 }
 
 pub struct JsFuture<T> {
-    pub(in crate::futures) state: Cell<JsFutureState<T>>,
+    pub(crate) state: Cell<JsFutureState<T>>,
     _pinned: PhantomPinned,
 }
 

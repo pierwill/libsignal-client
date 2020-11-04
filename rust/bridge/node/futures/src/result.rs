@@ -1,19 +1,17 @@
 //
-// Copyright (C) 2020 Signal Messenger, LLC.
-// All rights reserved.
-//
-// SPDX-License-Identifier: GPL-3.0-only
+// Copyright 2020 Signal Messenger, LLC.
+// SPDX-License-Identifier: AGPL-3.0-only
 //
 
 use neon::prelude::*;
 
 pub type JsFutureResult<'a> = Result<Handle<'a, JsValue>, Handle<'a, JsValue>>;
 
-pub(in crate::futures) trait JsFutureResultConstructor {
+pub(crate) trait JsFutureResultConstructor {
     fn make(value: Handle<JsValue>) -> JsFutureResult;
 }
 
-pub(in crate::futures) struct JsFulfilledResult;
+pub(crate) struct JsFulfilledResult;
 
 impl JsFutureResultConstructor for JsFulfilledResult {
     fn make(value: Handle<JsValue>) -> JsFutureResult {
@@ -21,7 +19,7 @@ impl JsFutureResultConstructor for JsFulfilledResult {
     }
 }
 
-pub(in crate::futures) struct JsRejectedResult;
+pub(crate) struct JsRejectedResult;
 
 impl JsFutureResultConstructor for JsRejectedResult {
     fn make(value: Handle<JsValue>) -> JsFutureResult {

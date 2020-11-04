@@ -1,9 +1,9 @@
 //
-// Copyright (C) 2020 Signal Messenger, LLC.
-// All rights reserved.
+// Copyright 2020 Signal Messenger, LLC.
+// SPDX-License-Identifier: AGPL-3.0-only
 //
-// SPDX-License-Identifier: GPL-3.0-only
-//
+
+#![feature(cell_leak)]
 
 mod context;
 pub use context::{JsAsyncContext, JsAsyncContextKey};

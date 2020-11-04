@@ -3,13 +3,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 
-#![feature(cell_leak)]
-
 use libsignal_protocol_rust::*;
 use neon::context::Context;
 use neon::prelude::*;
-
-mod futures;
+use signal_neon_futures::*;
 
 pub(crate) fn borrow_this<'a, V, T, F>(cx: &mut MethodContext<'a, V>, f: F) -> T
 where
@@ -50,24 +47,26 @@ fn print_callback_result(mut cx: FunctionContext) -> JsResult<JsValue> {
     global.set(&mut cx, "__state", callback)?;
     global.set(&mut cx, "__done", done)?;
 
-    let future_context = futures::JsAsyncContext::new();
+    let future_context = JsAsyncContext::new();
 
     future_context.clone().run(&mut cx, async move {
-        let future =
-            future_context.with_context(|cx| {
-                let callback = cx
-                    .global()
-                    .get(cx, "__state")
-                    .expect("bleh")
-                    .downcast()
-                    .expect("bleeeh");
-                futures::JsFuture::new(cx, callback, future_context.clone(), |cx3, result| {
-                    match result {
-                        Ok(handle) => handle.to_string(cx3).expect("can stringify").value(),
-                        Err(_) => panic!("unexpected JS error"),
-                    }
-                })
-            });
+        let future = future_context.with_context(|cx| {
+            let callback = cx
+                .global()
+                .get(cx, "__state")
+                .expect("bleh")
+                .downcast()
+                .expect("bleeeh");
+            JsFuture::new(
+                cx,
+                callback,
+                future_context.clone(),
+                |cx3, result| match result {
+                    Ok(handle) => handle.to_string(cx3).expect("can stringify").value(),
+                    Err(_) => panic!("unexpected JS error"),
+                },
+            )
+        });
         let output: String = future.await;
         future_context.with_context(|cx| {
             let callback = cx
@@ -86,15 +85,15 @@ fn print_callback_result(mut cx: FunctionContext) -> JsResult<JsValue> {
 }
 
 struct JsSessionStore {
-    context: futures::JsAsyncContext,
-    key: futures::JsAsyncContextKey<JsObject>,
+    context: JsAsyncContext,
+    key: JsAsyncContextKey<JsObject>,
 }
 
 impl JsSessionStore {
     fn new<'a>(
         cx: &mut FunctionContext<'a>,
         store: Handle<'a, JsObject>,
-        context: futures::JsAsyncContext,
+        context: JsAsyncContext,
     ) -> NeonResult<Self> {
         let key = context.register_context_data(cx, store)?;
         Ok(Self { context, key })
@@ -132,7 +131,7 @@ async fn use_store_impl(store: JsSessionStore) {
 fn use_store(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     let store = cx.argument(0)?;
 
-    let future_context = futures::JsAsyncContext::new();
+    let future_context = JsAsyncContext::new();
 
     let store = JsSessionStore::new(&mut cx, store, future_context.clone())?;
 

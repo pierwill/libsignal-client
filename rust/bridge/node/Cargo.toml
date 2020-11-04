@@ -19,6 +19,6 @@ neon-build = "0.5.0"
 
 [dependencies]
 libsignal-protocol-rust = { path = "../../protocol" }
+signal-neon-futures = { path = "futures" }
 neon = "0.5.0"
 rand = "0.7.3"
-futures = "0.3.7"

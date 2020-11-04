@@ -1,8 +1,6 @@
 //
-// Copyright (C) 2020 Signal Messenger, LLC.
-// All rights reserved.
-//
-// SPDX-License-Identifier: GPL-3.0-only
+// Copyright 2020 Signal Messenger, LLC.
+// SPDX-License-Identifier: AGPL-3.0-only
 //
 
 use futures::executor::LocalPool;
@@ -15,7 +13,7 @@ use std::panic;
 use std::pin::Pin;
 use std::rc::Rc;
 
-use crate::futures::future::*;
+use crate::future::*;
 
 pub struct JsFutureBuilder<T> {
     future: Pin<Box<JsFuture<T>>>,
@@ -103,11 +101,7 @@ pub struct JsAsyncContext {
 }
 
 impl JsAsyncContext {
-    pub(in crate::futures) fn run_with_context(
-        self,
-        cx: &mut FunctionContext,
-        action: impl FnOnce(),
-    ) {
+    pub(crate) fn run_with_context(self, cx: &mut FunctionContext, action: impl FnOnce()) {
         // While running, we use a RefCell to dynamically check access to the JS context.
         // But a RefCell has to own its data. as_ref_cell allows us to take the context out of its current reference and put it back later, like a more advanced version of std::mem::replace.
         as_ref_cell(cx, |cx| {
@@ -150,11 +144,11 @@ impl JsAsyncContext {
         });
     }
 
-    pub(in crate::futures) fn register_future(&self) {
+    pub(crate) fn register_future(&self) {
         self.shared_state.borrow_mut().num_pending_js_futures += 1
     }
 
-    pub(in crate::futures) fn resolve_future(&self) {
+    pub(crate) fn resolve_future(&self) {
         self.shared_state.borrow_mut().num_pending_js_futures -= 1
     }
 
