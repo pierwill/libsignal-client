@@ -31,4 +31,8 @@ describe('native', () => {
     );
     assert.equal(result, 'error: badness');
   });
+
+  it('recovers from panics', async () => {
+    native.panicOnResolve(Promise.resolve(5));
+  });
 });

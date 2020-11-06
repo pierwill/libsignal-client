@@ -45,6 +45,30 @@ fn increment_async(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     Ok(cx.undefined())
 }
 
+fn panic_on_resolve(mut cx: FunctionContext) -> JsResult<JsUndefined> {
+    let promise = cx.argument::<JsObject>(0)?;
+
+    let future_context = JsAsyncContext::new();
+    let promise_key = future_context.register_context_data(&mut cx, promise)?;
+
+    future_context.clone().run(&mut cx, async move {
+        let future = future_context
+            .await_promise(|cx| {
+                let promise = future_context
+                    .get_context_data(cx, promise_key)
+                    .expect("exists");
+                promise
+            })
+            .then(|_cx, _result| ());
+        future.await;
+        panic!("oh no");
+    });
+
+    Ok(cx.undefined())
+}
+
 register_module!(mut cx, {
-    cx.export_function("incrementAsync", increment_async)
+    cx.export_function("incrementAsync", increment_async)?;
+    cx.export_function("panicOnResolve", panic_on_resolve)?;
+    Ok(())
 });

@@ -6,7 +6,6 @@
 use futures::executor::LocalPool;
 use futures::task::LocalSpawnExt;
 use neon::prelude::*;
-use scopeguard::ScopeGuard;
 use std::cell::RefCell;
 use std::future::Future;
 use std::marker::{PhantomData, PhantomPinned};
@@ -120,38 +119,30 @@ impl JsAsyncContext {
                 .very_unsafe_current_context
                 .replace(opaque_c);
 
-            let reset_context = |shared_state: Pin<&RefCell<JsAsyncContextImpl>>| {
-                shared_state.borrow_mut().very_unsafe_current_context = prev_context
-            };
+            let guarded_self = scopeguard::guard(self, |self_| {
+                // If this is the last reference, destroy it while the JavaScript context is still available.
+                // Otherwise, clean up manually.
+                match Rc::try_unwrap(unsafe { Pin::into_inner_unchecked(self_.shared_state) }) {
+                    Ok(state) => std::mem::drop(state),
+                    Err(shared_state) => {
+                        shared_state.borrow_mut().very_unsafe_current_context = prev_context;
+                    }
+                };
+            });
 
-            {
-                // Use a guard to reset on unwind.
-                let reset_context_guard =
-                    scopeguard::guard(self.shared_state.as_ref(), reset_context);
+            action();
 
-                action();
-
-                let maybe_pool = self.shared_state.borrow_mut().pool.take();
-                if let Some(mut pool) = maybe_pool {
-                    pool.run_until_stalled();
-                    let mut shared_state = self.shared_state.borrow_mut();
-                    assert!(
-                        shared_state.complete || shared_state.num_pending_js_futures > 0,
-                        "only supports blocking on JavaScript futures"
-                    );
-                    shared_state.pool = Some(pool);
-                } else {
-                    // We're in a recursive call and the pool will continue to be processed when we return.
-                }
-
-                // If we make it here, hold off on resetting just yet (see below).
-                ScopeGuard::into_inner(reset_context_guard);
-            }
-
-            // If this is the last reference, destroy it while the JavaScript context is still available. Otherwise, clean up manually.
-            match Rc::try_unwrap(unsafe { Pin::into_inner_unchecked(self.shared_state) }) {
-                Ok(state) => std::mem::drop(state),
-                Err(shared_state) => reset_context(unsafe { Pin::new_unchecked(&shared_state) }),
+            let maybe_pool = guarded_self.shared_state.borrow_mut().pool.take();
+            if let Some(mut pool) = maybe_pool {
+                pool.run_until_stalled();
+                let mut shared_state = guarded_self.shared_state.borrow_mut();
+                assert!(
+                    shared_state.complete || shared_state.num_pending_js_futures > 0,
+                    "only supports blocking on JavaScript futures"
+                );
+                shared_state.pool = Some(pool);
+            } else {
+                // We're in a recursive call and the pool will continue to be processed when we return.
             }
         });
     }
