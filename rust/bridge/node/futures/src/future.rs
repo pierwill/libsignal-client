@@ -104,7 +104,7 @@ impl<T> JsFuture<T> {
 
         fn bound_resolve_promise<'a, T, R: JsFutureResultConstructor>(
             cx: &mut FunctionContext<'a>,
-            boxed_ptr: *const T,
+            boxed_ptr: *const JsFuture<T>,
         ) -> Handle<'a, JsValue> {
             let resolve =
                 JsFunction::new(cx, resolve_promise::<T, R>).expect("can create function");
