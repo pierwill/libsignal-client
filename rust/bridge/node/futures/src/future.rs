@@ -68,7 +68,7 @@ fn resolve_promise<T, R: JsFutureResultConstructor>(
     mut cx: FunctionContext,
 ) -> JsResult<JsUndefined> {
     let js_result = cx.argument(1)?;
-    let opaque_ptr = cx.argument::<JsNumber>(0)?.value() as u64 as *const ();
+    let opaque_ptr = cx.argument::<JsNumber>(0)?.value().to_bits() as *const ();
     let future = unsafe { (opaque_ptr as *const JsFuture<T>).as_ref().unwrap() };
     let state = future.state.replace(JsFutureState::Consumed);
 
@@ -115,7 +115,7 @@ impl<T> JsFuture<T> {
                 .expect("bind() is a function");
             let bind_args = vec![
                 cx.undefined().upcast::<JsValue>(),
-                cx.number(boxed_ptr as u64 as f64).upcast(),
+                cx.number(f64::from_bits(boxed_ptr as u64)).upcast(),
             ];
             bind.call(cx, resolve, bind_args).expect("can call bind()")
         }

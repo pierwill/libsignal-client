@@ -126,7 +126,8 @@ impl JsAsyncContext {
 
             {
                 // Use a guard to reset on unwind.
-                let reset_context_guard = scopeguard::guard(self.shared_state.as_ref(), reset_context);
+                let reset_context_guard =
+                    scopeguard::guard(self.shared_state.as_ref(), reset_context);
 
                 action();
 
