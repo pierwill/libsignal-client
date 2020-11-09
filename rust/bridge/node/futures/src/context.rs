@@ -174,7 +174,7 @@ impl JsAsyncContext {
 
     pub fn with_context<R>(
         &self,
-        mut callback: impl for<'a> FnMut(&mut FunctionContext<'a>) -> R,
+        callback: impl for<'a> FnOnce(&mut FunctionContext<'a>) -> R,
     ) -> R {
         let context_holder = self
             .shared_state
@@ -182,7 +182,11 @@ impl JsAsyncContext {
             .very_unsafe_current_context
             .expect("cannot use the JS context outside of a JS call");
         let mut result = None;
-        context_holder.with_context(&mut |cx| result = Some(callback(cx)));
+        let mut callback = Some(callback);
+        context_holder.with_context(&mut |cx| {
+            let callback = callback.take().unwrap();
+            result = Some(callback(cx));
+        });
         result.unwrap() // The callback is always called; we just can't prove it to the compiler.
     }
 
