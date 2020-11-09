@@ -16,14 +16,12 @@ use std::rc::Rc;
 use crate::future::*;
 
 pub struct JsFutureBuilder<T> {
-    future: Pin<Box<JsFuture<T>>>,
+    future: JsFuture<T>,
 }
 
 impl<T> JsFutureBuilder<T> {
-    pub fn then(self, transform: JsFutureCallback<T>) -> Pin<Box<JsFuture<T>>> {
-        let mut state = self.future.state.replace(JsFutureState::Consumed);
-        state.set_transform(transform);
-        self.future.state.set(state);
+    pub fn then(mut self, transform: JsFutureCallback<T>) -> JsFuture<T> {
+        self.future.set_transform(transform);
         self.future
     }
 }
