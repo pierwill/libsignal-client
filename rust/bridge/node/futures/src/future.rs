@@ -13,6 +13,7 @@ use std::rc::{Rc, Weak};
 use std::task::{Poll, Waker};
 
 use crate::result::*;
+use crate::util::*;
 use crate::JsAsyncContext;
 
 pub type JsFutureCallback<T> = for<'a> fn(&mut FunctionContext<'a>, JsFutureResult<'a>) -> T;
@@ -64,10 +65,8 @@ impl<T> Future for JsFuture<T> {
     fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context) -> Poll<Self::Output> {
         let state = self.shared.state.replace(JsFutureState::Consumed);
         match state {
-            JsFutureState::Complete(result) => {
-                // Propagate any panics.
-                return Poll::Ready(result.unwrap())
-            }
+            JsFutureState::Complete(Ok(result)) => return Poll::Ready(result),
+            JsFutureState::Complete(Err(result)) => panic::resume_unwind(result),
             JsFutureState::Consumed => panic!("already consumed"),
             JsFutureState::Waiting(ref async_context, _, None) => async_context.register_future(),
             JsFutureState::Waiting(_, _, _) => {}
@@ -88,7 +87,9 @@ fn resolve_promise<T, R: JsFutureResultConstructor>(
         let state = future.state.replace(JsFutureState::Consumed);
 
         if let JsFutureState::Waiting(async_context, transform, waker) = state {
-            let result = panic::catch_unwind(AssertUnwindSafe(|| transform(&mut cx, R::make(js_result))));
+            let result = panic::catch_unwind(AssertUnwindSafe(|| {
+                panic_on_exceptions(&mut cx, |cx| transform(cx, R::make(js_result)))
+            }));
             future.state.set(JsFutureState::Complete(result));
             async_context.resolve_future();
             async_context.run_with_context(&mut cx, || {

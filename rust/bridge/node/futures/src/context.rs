@@ -14,6 +14,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 
 use crate::future::*;
+use crate::util::*;
 
 pub struct JsFutureBuilder<T> {
     future: JsFuture<T>,
@@ -100,61 +101,73 @@ pub struct JsAsyncContext {
 
 impl JsAsyncContext {
     pub(crate) fn run_with_context(self, cx: &mut FunctionContext, action: impl FnOnce()) {
-        // While running, we use a RefCell to dynamically check access to the JS context.
-        // But a RefCell has to own its data. as_ref_cell allows us to take the context out of its current reference and put it back later, like a more advanced version of std::mem::replace.
-        as_ref_cell(cx, |cx| {
-            let c: &dyn CurrentContext = &CurrentContextImpl { context: cx };
-            // Lie about the lifetime of `c` so that it can be accessed from arbitrary call sites.
-            // "This is advanced, very unsafe Rust!" - std::mem::transmute docs on lifetime extension.
-            #[allow(clippy::transmute_ptr_to_ptr)]
-            let opaque_c = unsafe {
-                std::mem::transmute::<&dyn CurrentContext, &'static dyn CurrentContext>(c)
-            };
+        let action = AssertUnwindSafe(action);
+        let self_ = AssertUnwindSafe(self);
+        let panic_result = panic::catch_unwind(AssertUnwindSafe(|| {
+            panic_on_exceptions(cx, move |cx| {
+                // While running, we use a RefCell to dynamically check access to the JS context. But a RefCell has to own its data.
+                // as_ref_cell allows us to take the context out of its current reference and put it back later,
+                // like a more advanced version of std::mem::replace.
+                as_ref_cell(cx, |cx| {
+                    let c: &dyn CurrentContext = &CurrentContextImpl { context: cx };
+                    // Lie about the lifetime of `c` so that it can be accessed from arbitrary call sites.
+                    // "This is advanced, very unsafe Rust!" - std::mem::transmute docs on lifetime extension.
+                    #[allow(clippy::transmute_ptr_to_ptr)]
+                    let opaque_c = unsafe {
+                        std::mem::transmute::<&dyn CurrentContext, &'static dyn CurrentContext>(c)
+                    };
 
-            let prev_context = self
-                .shared_state
-                .borrow_mut()
-                .very_unsafe_current_context
-                .replace(opaque_c);
+                    let AssertUnwindSafe(self_) = self_;
+                    let prev_context = self_
+                        .shared_state
+                        .borrow_mut()
+                        .very_unsafe_current_context
+                        .replace(opaque_c);
 
-            let guarded_self = scopeguard::guard(self, |self_| {
-                // If this is the last reference, destroy it while the JavaScript context is still available.
-                // Otherwise, clean up manually.
-                match Rc::try_unwrap(unsafe { Pin::into_inner_unchecked(self_.shared_state) }) {
-                    Ok(state) => std::mem::drop(state),
-                    Err(shared_state) => {
-                        shared_state.borrow_mut().very_unsafe_current_context = prev_context;
+                    let guarded_self = scopeguard::guard(self_, |self_| {
+                        // If this is the last reference, destroy it while the JavaScript context is still available.
+                        // Otherwise, clean up manually.
+                        match Rc::try_unwrap(unsafe {
+                            Pin::into_inner_unchecked(self_.shared_state)
+                        }) {
+                            Ok(state) => std::mem::drop(state),
+                            Err(shared_state) => {
+                                shared_state.borrow_mut().very_unsafe_current_context =
+                                    prev_context;
+                            }
+                        };
+                    });
+
+                    action();
+
+                    let maybe_pool = guarded_self.shared_state.borrow_mut().pool.take();
+                    if let Some(mut pool) = maybe_pool {
+                        pool.run_until_stalled();
+                        let mut shared_state = guarded_self.shared_state.borrow_mut();
+                        assert!(
+                            shared_state.complete || shared_state.num_pending_js_futures > 0,
+                            "only supports blocking on JavaScript futures"
+                        );
+                        shared_state.pool = Some(pool);
+                    } else {
+                        // We're in a recursive call and the pool will continue to be processed when we return.
                     }
-                };
+                });
             });
+        }));
 
-            let panic_result = panic::catch_unwind(AssertUnwindSafe(|| {
-                action();
-
-                let maybe_pool = guarded_self.shared_state.borrow_mut().pool.take();
-                if let Some(mut pool) = maybe_pool {
-                    pool.run_until_stalled();
-                    let mut shared_state = guarded_self.shared_state.borrow_mut();
-                    assert!(
-                        shared_state.complete || shared_state.num_pending_js_futures > 0,
-                        "only supports blocking on JavaScript futures"
-                    );
-                    shared_state.pool = Some(pool);
-                } else {
-                    // We're in a recursive call and the pool will continue to be processed when we return.
-                }
-            }));
-
-            if let Err(_) = panic_result {
-                // We don't support unwinding panics in an async context.
-                // Neon translates unwinding panics into JavaScript exceptions,
-                // but older versions of Node drop those on the ground if they occur on the microtask queue
-                // (e.g. when evaluating a promise).
-                // So, force an abort instead to preserve safety.
-                eprintln!("\n!! Panics and JavaScript errors must be handled during async execution !!\n");
-                std::process::abort();
-            }
-        });
+        if let Err(err) = panic_result {
+            // We don't support unwinding panics in an async context.
+            // Neon translates unwinding panics into JavaScript exceptions,
+            // but older versions of Node drop those on the ground if they occur on the microtask queue
+            // (e.g. when evaluating a promise).
+            // So, force an abort instead to preserve safety.
+            eprintln!(
+                "\n!! Panics must be handled during async execution !!\n{}\n",
+                describe_any(&err)
+            );
+            std::process::abort();
+        }
     }
 
     pub(crate) fn register_future(&self) {

@@ -13,3 +13,5 @@ pub use future::JsFuture;
 
 mod result;
 pub use result::JsFutureResult;
+
+mod util;
