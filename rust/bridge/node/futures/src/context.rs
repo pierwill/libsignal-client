@@ -9,7 +9,7 @@ use neon::prelude::*;
 use std::cell::RefCell;
 use std::future::Future;
 use std::marker::{PhantomData, PhantomPinned};
-use std::panic;
+use std::panic::{self, AssertUnwindSafe};
 use std::pin::Pin;
 use std::rc::Rc;
 
@@ -128,19 +128,31 @@ impl JsAsyncContext {
                 };
             });
 
-            action();
+            let panic_result = panic::catch_unwind(AssertUnwindSafe(|| {
+                action();
 
-            let maybe_pool = guarded_self.shared_state.borrow_mut().pool.take();
-            if let Some(mut pool) = maybe_pool {
-                pool.run_until_stalled();
-                let mut shared_state = guarded_self.shared_state.borrow_mut();
-                assert!(
-                    shared_state.complete || shared_state.num_pending_js_futures > 0,
-                    "only supports blocking on JavaScript futures"
-                );
-                shared_state.pool = Some(pool);
-            } else {
-                // We're in a recursive call and the pool will continue to be processed when we return.
+                let maybe_pool = guarded_self.shared_state.borrow_mut().pool.take();
+                if let Some(mut pool) = maybe_pool {
+                    pool.run_until_stalled();
+                    let mut shared_state = guarded_self.shared_state.borrow_mut();
+                    assert!(
+                        shared_state.complete || shared_state.num_pending_js_futures > 0,
+                        "only supports blocking on JavaScript futures"
+                    );
+                    shared_state.pool = Some(pool);
+                } else {
+                    // We're in a recursive call and the pool will continue to be processed when we return.
+                }
+            }));
+
+            if let Err(_) = panic_result {
+                // We don't support unwinding panics in an async context.
+                // Neon translates unwinding panics into JavaScript exceptions,
+                // but older versions of Node drop those on the ground if they occur on the microtask queue
+                // (e.g. when evaluating a promise).
+                // So, force an abort instead to preserve safety.
+                eprintln!("\n!! Panics and JavaScript errors must be handled during async execution !!\n");
+                std::process::abort();
             }
         });
     }

@@ -7,6 +7,7 @@ use neon::prelude::*;
 use std::cell::Cell;
 use std::future::Future;
 use std::marker::PhantomPinned;
+use std::panic::{self, AssertUnwindSafe};
 use std::pin::Pin;
 use std::rc::{Rc, Weak};
 use std::task::{Poll, Waker};
@@ -18,7 +19,7 @@ pub type JsFutureCallback<T> = for<'a> fn(&mut FunctionContext<'a>, JsFutureResu
 
 pub(crate) enum JsFutureState<T> {
     Waiting(JsAsyncContext, JsFutureCallback<T>, Option<Waker>),
-    Complete(T),
+    Complete(std::thread::Result<T>),
     Consumed,
 }
 
@@ -63,7 +64,10 @@ impl<T> Future for JsFuture<T> {
     fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context) -> Poll<Self::Output> {
         let state = self.shared.state.replace(JsFutureState::Consumed);
         match state {
-            JsFutureState::Complete(result) => return Poll::Ready(result),
+            JsFutureState::Complete(result) => {
+                // Propagate any panics.
+                return Poll::Ready(result.unwrap())
+            }
             JsFutureState::Consumed => panic!("already consumed"),
             JsFutureState::Waiting(ref async_context, _, None) => async_context.register_future(),
             JsFutureState::Waiting(_, _, _) => {}
@@ -84,7 +88,7 @@ fn resolve_promise<T, R: JsFutureResultConstructor>(
         let state = future.state.replace(JsFutureState::Consumed);
 
         if let JsFutureState::Waiting(async_context, transform, waker) = state {
-            let result = transform(&mut cx, R::make(js_result));
+            let result = panic::catch_unwind(AssertUnwindSafe(|| transform(&mut cx, R::make(js_result))));
             future.state.set(JsFutureState::Complete(result));
             async_context.resolve_future();
             async_context.run_with_context(&mut cx, || {
