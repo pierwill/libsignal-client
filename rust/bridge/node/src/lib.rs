@@ -11,7 +11,7 @@ use signal_neon_futures::*;
 pub(crate) fn borrow_this<'a, V, T, F>(cx: &mut MethodContext<'a, V>, f: F) -> T
 where
     V: Class,
-    F: for<'b> FnOnce(neon::borrow::Ref<'b, &mut <V as Class>::Internals>) -> T,
+    F: FnOnce(neon::borrow::Ref<'_, &mut <V as Class>::Internals>) -> T,
 {
     let this = cx.this();
     cx.borrow(&this, f)

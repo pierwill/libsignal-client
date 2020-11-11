@@ -28,7 +28,7 @@ impl<T> JsFutureBuilder<T> {
 }
 
 trait CurrentContext {
-    fn with_context(&self, callback: &mut dyn for<'a> FnMut(&mut FunctionContext<'a>));
+    fn with_context(&self, callback: &mut dyn FnMut(&mut FunctionContext<'_>));
 }
 
 struct CurrentContextImpl<'a, 'b> {
@@ -36,7 +36,7 @@ struct CurrentContextImpl<'a, 'b> {
 }
 
 impl<'a, 'b> CurrentContext for CurrentContextImpl<'a, 'b> {
-    fn with_context(&self, callback: &mut dyn for<'c> FnMut(&mut FunctionContext<'c>)) {
+    fn with_context(&self, callback: &mut dyn FnMut(&mut FunctionContext<'_>)) {
         callback(&mut self.context.borrow_mut())
     }
 }
@@ -199,7 +199,7 @@ impl JsAsyncContext {
 
     pub fn with_context<R>(
         &self,
-        callback: impl for<'a> FnOnce(&mut FunctionContext<'a>) -> R,
+        callback: impl FnOnce(&mut FunctionContext<'_>) -> R,
     ) -> R {
         let context_holder = self
             .shared_state
