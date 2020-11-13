@@ -209,7 +209,7 @@ impl JsAsyncContext {
         self.shared_state.as_ptr() as *const ()
     }
 
-    pub fn new() -> Self {
+    fn new() -> Self {
         let result = Self {
             shared_state: Rc::pin(RefCell::new(JsAsyncContextImpl {
                 very_unsafe_current_context: None,
@@ -270,22 +270,52 @@ impl JsAsyncContext {
         self.with_context(move |cx| self.try_catch(cx, callback))
     }
 
-    pub fn run(self, cx: &mut FunctionContext, future: impl Future<Output = ()> + 'static) {
-        let spawner = self
+    pub fn run<'a, F>(
+        cx: &mut FunctionContext<'a>,
+        callback: impl FnOnce(&mut FunctionContext<'a>, JsAsyncContext) -> NeonResult<F>,
+    ) -> NeonResult<()>
+    where
+        F: Future<Output = ()> + 'static,
+    {
+        let async_context = Self::new();
+        let spawner = async_context
             .shared_state
             .borrow()
             .pool
             .as_ref()
-            .expect("should only be called at the top level of an operation")
+            .unwrap()
             .spawner();
-        let self_for_future = self.clone();
-        spawner
-            .spawn_local(async move {
-                future.await;
-                self_for_future.shared_state.borrow_mut().complete = true;
-            })
-            .expect("can spawn at the top level of an operation");
-        self.run_with_context(cx, |_| {});
+        let callback = AssertUnwindSafe(callback);
+        let mut error_to_throw = None;
+        async_context.clone().run_with_context(cx, |cx| {
+            let mut future = None;
+            let maybe_error = {
+                let mut future_ref = AssertUnwindSafe(&mut future);
+                let async_context = AssertUnwindSafe(async_context.clone());
+                cx.try_catch(move |cx| {
+                    **future_ref = Some(AssertUnwindSafe(callback.0(cx, async_context.0)?));
+
+                    // Dummy return value; see https://github.com/neon-bindings/neon/issues/630
+                    Ok(cx.undefined())
+                })
+            };
+            match maybe_error {
+                Ok(_) => {
+                    spawner
+                        .spawn_local(async move {
+                            future.unwrap().0.await;
+                            async_context.shared_state.borrow_mut().complete = true;
+                        })
+                        .expect("can spawn at the top level of an operation");
+                }
+                Err(error) => error_to_throw = Some(error),
+            }
+        });
+
+        if let Some(error) = error_to_throw {
+            cx.throw(error)?;
+        }
+        Ok(())
     }
 
     pub fn await_promise<T>(
@@ -359,11 +389,5 @@ impl JsAsyncContext {
             .expect("invalid key")
             .downcast()
             .expect("type has not changed")
-    }
-}
-
-impl Default for JsAsyncContext {
-    fn default() -> Self {
-        Self::new()
     }
 }
