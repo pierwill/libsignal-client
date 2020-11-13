@@ -28,9 +28,7 @@ fn increment_async(mut cx: FunctionContext) -> JsResult<JsUndefined> {
                 Ok(value) => Ok(value.downcast::<JsNumber>().expect("is number").value()),
                 Err(err) => Err(err.to_string(cx).unwrap().value()),
             });
-        let value_or_error = future
-            .await
-            .unwrap_or_else(|_| panic!("cannot fail on the JS side"));
+        let value_or_error = future.await;
         future_context.with_context(|cx| {
             let new_value = match value_or_error {
                 Ok(value) => cx.number(value + 1.0).upcast::<JsValue>(),
@@ -51,9 +49,11 @@ fn increment_promise(mut cx: FunctionContext) -> JsResult<JsObject> {
     let promise = cx.argument::<JsObject>(0)?;
 
     signal_neon_futures::promise(&mut cx, |cx, future_context| {
-        let future = JsFuture::new(cx, promise, future_context, |cx, result| {
-            let value = result.or_else(|e| cx.throw(e))?;
-            Ok(value.downcast_or_throw::<JsNumber, _>(cx)?.value())
+        let future = JsFuture::new(cx, promise, future_context.clone(), move |cx, result| {
+            future_context.try_catch(cx, |cx| {
+                let value = result.or_else(|e| cx.throw(e))?;
+                Ok(value.downcast_or_throw::<JsNumber, _>(cx)?.value())
+            })
         });
         async move {
             let value = future.await?;

@@ -11,9 +11,11 @@ pub fn panic_pre_await(mut cx: FunctionContext) -> JsResult<JsObject> {
     let promise = cx.argument::<JsObject>(0)?;
 
     signal_neon_futures::promise(&mut cx, |cx, future_context| {
-        let future = JsFuture::new(cx, promise, future_context, |cx, result| {
-            let value = result.or_else(|e| cx.throw(e))?;
-            Ok(value.downcast_or_throw::<JsNumber, _>(cx)?.value())
+        let future = JsFuture::new(cx, promise, future_context.clone(), move |cx, result| {
+            future_context.try_catch(cx, |cx| {
+                let value = result.or_else(|e| cx.throw(e))?;
+                Ok(value.downcast_or_throw::<JsNumber, _>(cx)?.value())
+            })
         });
         async move {
             panic!("check for this");
@@ -32,7 +34,7 @@ pub fn panic_during_callback(mut cx: FunctionContext) -> JsResult<JsObject> {
             panic!("check for this")
         });
         async move {
-            future.await?;
+            future.await;
             fulfill_promise(move |cx| Ok(cx.undefined()))
         }
     })
@@ -43,9 +45,11 @@ pub fn panic_post_await(mut cx: FunctionContext) -> JsResult<JsObject> {
     let promise = cx.argument::<JsObject>(0)?;
 
     signal_neon_futures::promise(&mut cx, |cx, future_context| {
-        let future = JsFuture::new(cx, promise, future_context, |cx, result| {
-            let value = result.or_else(|e| cx.throw(e))?;
-            Ok(value.downcast_or_throw::<JsNumber, _>(cx)?.value())
+        let future = JsFuture::new(cx, promise, future_context.clone(), move |cx, result| {
+            future_context.try_catch(cx, |cx| {
+                let value = result.or_else(|e| cx.throw(e))?;
+                Ok(value.downcast_or_throw::<JsNumber, _>(cx)?.value())
+            })
         });
         async move {
             future.await?;
@@ -60,9 +64,11 @@ pub fn panic_during_fulfill(mut cx: FunctionContext) -> JsResult<JsObject> {
     let promise = cx.argument::<JsObject>(0)?;
 
     signal_neon_futures::promise(&mut cx, |cx, future_context| {
-        let future = JsFuture::new(cx, promise, future_context, |cx, result| {
-            let value = result.or_else(|e| cx.throw(e))?;
-            Ok(value.downcast_or_throw::<JsNumber, _>(cx)?.value())
+        let future = JsFuture::new(cx, promise, future_context.clone(), move |cx, result| {
+            future_context.try_catch(cx, |cx| {
+                let value = result.or_else(|e| cx.throw(e))?;
+                Ok(value.downcast_or_throw::<JsNumber, _>(cx)?.value())
+            })
         });
         async move {
             future.await?;
@@ -78,9 +84,12 @@ pub fn throw_pre_await(mut cx: FunctionContext) -> JsResult<JsObject> {
     let promise = cx.argument::<JsObject>(0)?;
 
     signal_neon_futures::promise(&mut cx, |cx, future_context| {
-        let future = JsFuture::new(cx, promise, future_context.clone(), |cx, result| {
-            let value = result.or_else(|e| cx.throw(e))?;
-            Ok(value.downcast_or_throw::<JsNumber, _>(cx)?.value())
+        let future_context_for_callback = future_context.clone();
+        let future = JsFuture::new(cx, promise, future_context.clone(), move |cx, result| {
+            future_context_for_callback.try_catch(cx, |cx| {
+                let value = result.or_else(|e| cx.throw(e))?;
+                Ok(value.downcast_or_throw::<JsNumber, _>(cx)?.value())
+            })
         });
         async move {
             future_context
@@ -95,8 +104,11 @@ pub fn throw_during_callback(mut cx: FunctionContext) -> JsResult<JsObject> {
     let promise = cx.argument::<JsObject>(0)?;
 
     signal_neon_futures::promise(&mut cx, |cx, future_context| {
-        let future = JsFuture::new(cx, promise, future_context, |cx, _result| {
-            cx.throw_error("check for this")
+        let future = JsFuture::new(cx, promise, future_context.clone(), move |cx, _result| {
+            future_context.try_catch(cx, |cx| {
+                cx.throw_error("check for this")?;
+                Ok(())
+            })
         });
         async move {
             future.await?;
@@ -109,9 +121,12 @@ pub fn throw_post_await(mut cx: FunctionContext) -> JsResult<JsObject> {
     let promise = cx.argument::<JsObject>(0)?;
 
     signal_neon_futures::promise(&mut cx, |cx, future_context| {
-        let future = JsFuture::new(cx, promise, future_context.clone(), |cx, result| {
-            let value = result.or_else(|e| cx.throw(e))?;
-            Ok(value.downcast_or_throw::<JsNumber, _>(cx)?.value())
+        let future_context_for_callback = future_context.clone();
+        let future = JsFuture::new(cx, promise, future_context.clone(), move |cx, result| {
+            future_context_for_callback.try_catch(cx, |cx| {
+                let value = result.or_else(|e| cx.throw(e))?;
+                Ok(value.downcast_or_throw::<JsNumber, _>(cx)?.value())
+            })
         });
         async move {
             future.await?;
@@ -126,9 +141,11 @@ pub fn throw_during_fulfill(mut cx: FunctionContext) -> JsResult<JsObject> {
     let promise = cx.argument::<JsObject>(0)?;
 
     signal_neon_futures::promise(&mut cx, |cx, future_context| {
-        let future = JsFuture::new(cx, promise, future_context, |cx, result| {
-            let value = result.or_else(|e| cx.throw(e))?;
-            Ok(value.downcast_or_throw::<JsNumber, _>(cx)?.value())
+        let future = JsFuture::new(cx, promise, future_context.clone(), move |cx, result| {
+            future_context.try_catch(cx, |cx| {
+                let value = result.or_else(|e| cx.throw(e))?;
+                Ok(value.downcast_or_throw::<JsNumber, _>(cx)?.value())
+            })
         });
         async move {
             future.await?;

@@ -16,25 +16,38 @@ use std::rc::Rc;
 use crate::util::*;
 use crate::*;
 
-pub struct JsFutureBuilder<T> {
-    future: JsFuture<T>,
+pub struct JsFutureBuilder<'a, T> {
+    async_context: &'a JsAsyncContext,
+    state: Result<JsFuture<T>, JsAsyncContextKey<JsValue>>,
 }
 
-impl<T> JsFutureBuilder<T> {
+impl<'a, T> JsFutureBuilder<'a, T> {
     pub fn then(
         self,
-        transform: impl 'static + for<'a> FnOnce(&'_ mut FunctionContext<'a>, JsPromiseResult<'a>) -> T,
+        transform: impl 'static + for<'b> FnOnce(&mut FunctionContext<'b>, JsPromiseResult<'b>) -> T,
     ) -> JsFuture<T> {
-        self.then_try(move |cx, result| Ok(transform(cx, result)))
+        match self.state {
+            Ok(mut future) => {
+                future.set_transform(transform);
+                future
+            }
+            Err(key) => self.async_context.with_context(|cx| {
+                let exception = self.async_context.get_context_data(cx, key);
+                let result = transform(cx, Err(exception));
+                JsFuture::ready(result)
+            }),
+        }
     }
+}
 
+impl<'a, T> JsFutureBuilder<'a, Result<T, JsAsyncContextKey<JsValue>>> {
     pub fn then_try(
-        mut self,
+        self,
         transform: impl 'static
-            + for<'a> FnOnce(&mut FunctionContext<'a>, JsPromiseResult<'a>) -> NeonResult<T>,
-    ) -> JsFuture<T> {
-        self.future.set_transform(transform);
-        self.future
+            + for<'b> FnOnce(&mut FunctionContext<'b>, JsPromiseResult<'b>) -> NeonResult<T>,
+    ) -> JsFuture<Result<T, JsAsyncContextKey<JsValue>>> {
+        let async_context = self.async_context.clone();
+        self.then(move |cx, result| async_context.try_catch(cx, |cx| transform(cx, result)))
     }
 }
 
@@ -94,16 +107,23 @@ pub struct JsAsyncContext {
 }
 
 impl JsAsyncContext {
-    pub(crate) fn run_with_context(self, cx: &mut FunctionContext, action: impl FnOnce()) {
+    pub(crate) fn run_with_context<'a>(
+        self,
+        mut cx: &mut FunctionContext<'a>,
+        action: impl FnOnce(&mut FunctionContext<'a>),
+    ) {
         let action = AssertUnwindSafe(action);
         let self_ = AssertUnwindSafe(self);
-        let result = panic::catch_unwind(AssertUnwindSafe(|| {
-            cx.try_catch(move |cx| {
+        let cx_ref = &mut cx;
+        let result = panic::catch_unwind(AssertUnwindSafe(move || {
+            cx_ref.try_catch(move |cx| {
+                action.0(cx);
+
                 // While running, we use a RefCell to dynamically check access to the JS context. But a RefCell has to own its data.
                 // as_ref_cell allows us to take the context out of its current reference and put it back later,
                 // like a more advanced version of std::mem::replace.
                 as_ref_cell(cx, |cx| {
-                    let c: &dyn CurrentContext = &CurrentContextImpl { context: cx };
+                    let c = &CurrentContextImpl { context: cx };
                     // Lie about the lifetime of `c` so that it can be accessed from arbitrary call sites.
                     // "This is advanced, very unsafe Rust!" - std::mem::transmute docs on lifetime extension.
                     #[allow(clippy::transmute_ptr_to_ptr)]
@@ -111,14 +131,14 @@ impl JsAsyncContext {
                         std::mem::transmute::<&dyn CurrentContext, &'static dyn CurrentContext>(c)
                     };
 
-                    let AssertUnwindSafe(self_) = self_;
                     let prev_context = self_
+                        .0
                         .shared_state
                         .borrow_mut()
                         .very_unsafe_current_context
                         .replace(opaque_c);
 
-                    let guarded_self = scopeguard::guard(self_, |self_| {
+                    let guarded_self = scopeguard::guard(self_.0, |self_| {
                         // If this is the last reference, destroy it while the JavaScript context is still available.
                         // Otherwise, clean up manually.
                         match Rc::try_unwrap(unsafe {
@@ -131,8 +151,6 @@ impl JsAsyncContext {
                             }
                         };
                     });
-
-                    action();
 
                     let maybe_pool = guarded_self.shared_state.borrow_mut().pool.take();
                     if let Some(mut pool) = maybe_pool {
@@ -225,7 +243,7 @@ impl JsAsyncContext {
         result.unwrap() // The callback is always called; we just can't prove it to the compiler.
     }
 
-    pub(crate) fn try_catch<'a, R>(
+    pub fn try_catch<'a, R>(
         &self,
         cx: &mut FunctionContext<'a>,
         callback: impl FnOnce(&mut FunctionContext<'a>) -> NeonResult<R>,
@@ -267,22 +285,23 @@ impl JsAsyncContext {
                 self_for_future.shared_state.borrow_mut().complete = true;
             })
             .expect("can spawn at the top level of an operation");
-        self.run_with_context(cx, || {});
+        self.run_with_context(cx, |_| {});
     }
 
     pub fn await_promise<T>(
         &self,
         mut promise_callback: impl for<'a> FnMut(&mut FunctionContext<'a>) -> JsResult<'a, JsObject>,
     ) -> JsFutureBuilder<T> {
-        let future = self
-            .try_with_context(|cx| {
-                let promise = promise_callback(cx)?;
-                Ok(JsFuture::new(cx, promise, self.clone(), |_cx, _handle| {
-                    panic!("no transform set yet")
-                }))
-            })
-            .unwrap_or_else(JsFuture::err);
-        JsFutureBuilder { future }
+        let future = self.try_with_context(|cx| {
+            let promise = promise_callback(cx)?;
+            Ok(JsFuture::new(cx, promise, self.clone(), |_cx, _handle| {
+                panic!("no transform set yet")
+            }))
+        });
+        JsFutureBuilder {
+            async_context: self,
+            state: future,
+        }
     }
 
     fn context_data_object<'a>(

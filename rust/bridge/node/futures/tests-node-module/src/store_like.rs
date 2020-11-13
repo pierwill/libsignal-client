@@ -39,8 +39,6 @@ impl NameStore {
                 Err(error) => Err(error.to_string(cx).expect("can convert to string").value()),
             })
             .await
-            .ok()
-            .unwrap()
     }
 }
 
