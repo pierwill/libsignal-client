@@ -56,9 +56,9 @@ impl<T> JsFuture<T> {
         let state = Cell::new(JsFutureState::Complete(Ok(Err(error))));
         Self {
             shared: Rc::pin(JsFutureShared {
-                state, 
-                _pinned: PhantomPinned
-            })
+                state,
+                _pinned: PhantomPinned,
+            }),
         }
     }
 
@@ -69,7 +69,7 @@ impl<T> JsFuture<T> {
             JsFutureState::Complete(Ok(Err(_))) => {
                 // We may have thrown a JavaScript error while the future is being constructed.
             }
-            _ => panic!("already completed")
+            _ => panic!("already completed"),
         }
         self.shared.state.set(state);
     }

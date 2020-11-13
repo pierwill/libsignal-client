@@ -80,24 +80,6 @@ impl Drop for JsAsyncContextImpl {
     }
 }
 
-// Based on https://crates.io/crates/take_mut.
-fn as_ref_cell<T, F>(mut_ref: &mut T, closure: F)
-where
-    F: FnOnce(&RefCell<T>),
-{
-    use std::ptr;
-
-    unsafe {
-        let mut cell = RefCell::new(ptr::read(mut_ref));
-        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| closure(&cell)));
-        cell.undo_leak();
-        ptr::write(mut_ref, cell.into_inner());
-        if let Err(err) = result {
-            panic::resume_unwind(err);
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 pub struct JsAsyncContextKey<T: neon::types::Value> {
     raw_key: u32,
@@ -114,8 +96,8 @@ impl JsAsyncContext {
     pub(crate) fn run_with_context(self, cx: &mut FunctionContext, action: impl FnOnce()) {
         let action = AssertUnwindSafe(action);
         let self_ = AssertUnwindSafe(self);
-        let panic_result = panic::catch_unwind(AssertUnwindSafe(|| {
-            panic_on_exceptions(cx, move |cx| {
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            cx.try_catch(move |cx| {
                 // While running, we use a RefCell to dynamically check access to the JS context. But a RefCell has to own its data.
                 // as_ref_cell allows us to take the context out of its current reference and put it back later,
                 // like a more advanced version of std::mem::replace.
@@ -164,21 +146,36 @@ impl JsAsyncContext {
                         // We're in a recursive call and the pool will continue to be processed when we return.
                     }
                 });
-            });
+
+                // Dummy return value; see https://github.com/neon-bindings/neon/issues/630
+                Ok(cx.undefined())
+            })
         }));
 
-        if let Err(err) = panic_result {
-            // We don't support unwinding panics in an async context.
-            // Neon translates unwinding panics into JavaScript exceptions,
-            // but older versions of Node drop those on the ground if they occur on the microtask queue
-            // (e.g. when evaluating a promise).
-            // So, force an abort instead to preserve safety.
-            eprintln!(
-                "\n!! Panics must be handled during async execution !!\n{}\n",
-                describe_any(&err)
-            );
-            std::process::abort();
+        match result {
+            Ok(Ok(_)) => return,
+            Ok(Err(js_err)) => {
+                // Older versions of Node drop thrown exceptions on the ground if they occur on the microtask queue
+                // (e.g. when evaluating a promise).
+                // So, force an abort instead to preserve safety.
+                eprintln!(
+                    "\n!! Thrown errors must be handled during async execution !!\n{}\n",
+                    js_err
+                        .to_string(cx)
+                        .expect("could not stringify thrown error")
+                        .value()
+                );
+            }
+            Err(panic) => {
+                // Neon translates unwinding panics into JavaScript exceptions,
+                // but those will get dropped (see above).
+                eprintln!(
+                    "\n!! Panics must be handled during async execution !!\n{}\n",
+                    describe_any(&panic)
+                );
+            }
         }
+        std::process::abort()
     }
 
     pub(crate) fn register_future(&self) {
@@ -202,7 +199,7 @@ impl JsAsyncContext {
             })),
         };
         result.shared_state.borrow_mut().global_key = format!(
-            "__libsignal-client::JsAsyncContext::{:x}",
+            "__signal_neon_futures::JsAsyncContext({:x})",
             result.shared_state.as_ptr() as usize
         );
         result
@@ -268,6 +265,21 @@ impl JsAsyncContext {
         self.run_with_context(cx, || {});
     }
 
+    pub fn await_promise<T>(
+        &self,
+        mut promise_callback: impl for<'a> FnMut(&mut FunctionContext<'a>) -> JsResult<'a, JsObject>,
+    ) -> JsFutureBuilder<T> {
+        let future = self
+            .try_with_context(|cx| {
+                let promise = promise_callback(cx)?;
+                Ok(JsFuture::new(cx, promise, self.clone(), |_cx, _handle| {
+                    panic!("no transform set yet")
+                }))
+            })
+            .unwrap_or_else(JsFuture::err);
+        JsFutureBuilder { future }
+    }
+
     fn context_data_object<'a>(
         &self,
         cx: &mut FunctionContext<'a>,
@@ -290,19 +302,6 @@ impl JsAsyncContext {
                 .downcast()
                 .expect("context data accessed improperly somehow")
         }
-    }
-
-    pub fn await_promise<T>(
-        &self,
-        mut promise_callback: impl for<'a> FnMut(&mut FunctionContext<'a>) -> JsResult<'a, JsObject>,
-    ) -> JsFutureBuilder<T> {
-        let future = self.try_with_context(|cx| {
-            let promise = promise_callback(cx)?;
-            Ok(JsFuture::new(cx, promise, self.clone(), |_cx, _handle| {
-                panic!("no transform set yet") // FIXME
-            }))
-        }).unwrap_or_else(|e| JsFuture::err(e));
-        JsFutureBuilder { future }
     }
 
     pub fn register_context_data<'a, T: neon::types::Value>(

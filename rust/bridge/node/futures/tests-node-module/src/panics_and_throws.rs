@@ -83,7 +83,8 @@ pub fn throw_pre_await(mut cx: FunctionContext) -> JsResult<JsObject> {
             Ok(value.downcast_or_throw::<JsNumber, _>(cx)?.value())
         });
         async move {
-            future_context.try_with_context(|cx| -> NeonResult<()> { cx.throw_error("check for this") })?;
+            future_context
+                .try_with_context(|cx| -> NeonResult<()> { cx.throw_error("check for this") })?;
             future.await?;
             fulfill_promise(move |cx| Ok(cx.undefined()))
         }
@@ -114,7 +115,8 @@ pub fn throw_post_await(mut cx: FunctionContext) -> JsResult<JsObject> {
         });
         async move {
             future.await?;
-            future_context.try_with_context(|cx| -> NeonResult<()> { cx.throw_error("check for this") })?;
+            future_context
+                .try_with_context(|cx| -> NeonResult<()> { cx.throw_error("check for this") })?;
             fulfill_promise(move |cx| Ok(cx.undefined()))
         }
     })
@@ -130,9 +132,7 @@ pub fn throw_during_fulfill(mut cx: FunctionContext) -> JsResult<JsObject> {
         });
         async move {
             future.await?;
-            fulfill_promise(move |cx| -> JsResult<JsUndefined> {
-                cx.throw_error("check for this")
-            })
+            fulfill_promise(move |cx| -> JsResult<JsUndefined> { cx.throw_error("check for this") })
         }
     })
 }

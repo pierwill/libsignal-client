@@ -58,7 +58,7 @@ describe('native', () => {
     });
   });
 
-  describe('recovery', () => {
+  describe('panic recovery', () => {
     it('handles pre-await panics', async () => {
       const promise = native.panicPreAwait(Promise.resolve(6));
       await assert.isRejected(promise, /unexpected panic: check for this/);
@@ -80,7 +80,7 @@ describe('native', () => {
     });
   });
 
-  describe('recovery', () => {
+  describe('exception recovery', () => {
     it('handles pre-await throws', async () => {
       const promise = native.throwPreAwait(Promise.resolve(6));
       await assert.isRejected(promise, /^check for this$/);

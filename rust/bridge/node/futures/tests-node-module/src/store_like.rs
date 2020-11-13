@@ -25,19 +25,22 @@ impl NameStore {
         self.context
             .await_promise(|cx| {
                 let store_object = self.context.get_context_data(cx, self.key);
-                let op = store_object.get(cx, "getName")?.downcast_or_throw::<JsFunction, _>(cx)?;
-                op.call(cx, store_object, std::iter::empty::<Handle<JsValue>>())?.downcast_or_throw(cx)
+                let op = store_object
+                    .get(cx, "getName")?
+                    .downcast_or_throw::<JsFunction, _>(cx)?;
+                op.call(cx, store_object, std::iter::empty::<Handle<JsValue>>())?
+                    .downcast_or_throw(cx)
             })
-            .then(|cx, result| {
-                match result {
-                    Ok(value) => match value.downcast::<JsString>() {
-                        Ok(s) => Ok(s.value()),
-                        Err(_) => Err("name must be a string".into()),
-                    }
-                    Err(error) => Err(error.to_string(cx).expect("can convert to string").value()),
-                }
+            .then(|cx, result| match result {
+                Ok(value) => match value.downcast::<JsString>() {
+                    Ok(s) => Ok(s.value()),
+                    Err(_) => Err("name must be a string".into()),
+                },
+                Err(error) => Err(error.to_string(cx).expect("can convert to string").value()),
             })
-            .await.ok().unwrap()
+            .await
+            .ok()
+            .unwrap()
     }
 }
 
@@ -49,7 +52,7 @@ pub fn double_name_from_store(mut cx: FunctionContext) -> JsResult<JsObject> {
     let js_store = cx.argument(0)?;
 
     promise(&mut cx, |cx, future_context| {
-        let store = NameStore::new(cx, js_store, future_context.clone());
+        let store = NameStore::new(cx, js_store, future_context);
         async move {
             let result = double_name_from_store_impl(store).await;
             fulfill_promise(move |cx| match result {
