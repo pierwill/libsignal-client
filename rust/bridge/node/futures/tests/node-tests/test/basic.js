@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 
+/* eslint-env es2017 */
+
 const chai = require('chai');
 const chaiAsPromised = require('chai-as-promised');
 
@@ -37,14 +39,18 @@ describe('native', () => {
   });
 
   it('can handle store-like callbacks', async () => {
-    const result = await native.doubleNameFromStore({ getName: () => Promise.resolve('Moxie') });
+    const result = await native.doubleNameFromStore({
+      getName: () => Promise.resolve('Moxie'),
+    });
     assert.equal(result, 'Moxie Moxie');
-  })
+  });
 
   it('can handle store-like callbacks that fail', async () => {
-    const promise = native.doubleNameFromStore({ getName: () => Promise.reject('uh oh') });
-    await assert.isRejected(promise, /rejected: uh oh/)
-  })
+    const promise = native.doubleNameFromStore({
+      getName: () => Promise.reject('uh oh'),
+    });
+    await assert.isRejected(promise, /rejected: uh oh/);
+  });
 
   describe('promises', () => {
     it('can fulfill promises', async () => {
