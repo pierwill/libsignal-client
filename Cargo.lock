@@ -723,6 +723,7 @@ dependencies = [
  "neon",
  "neon-build",
  "rand",
+ "signal-neon-futures",
 ]
 
 [[package]]
@@ -1251,6 +1252,25 @@ dependencies = [
  "cpuid-bool",
  "digest",
  "opaque-debug",
+]
+
+[[package]]
+name = "signal-neon-futures"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "neon",
+ "scopeguard",
+ "signal-neon-futures-tests",
+]
+
+[[package]]
+name = "signal-neon-futures-tests"
+version = "0.1.0"
+dependencies = [
+ "neon",
+ "neon-build",
+ "signal-neon-futures",
 ]
 
 [[package]]
