@@ -11,9 +11,8 @@ license = "AGPL-3.0-only"
 edition = "2018"
 
 [[test]]
-name = "node-futures-tests"
+name = "signal-neon-futures-tests"
 path = "tests/node.rs"
-test = false # Disable by default because it requires Node.
 harness = false
 
 [dependencies]
