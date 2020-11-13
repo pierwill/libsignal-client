@@ -13,20 +13,24 @@ use std::rc::{Rc, Weak};
 use std::task::{Poll, Waker};
 
 use crate::result::*;
-use crate::util::*;
-use crate::JsAsyncContext;
+use crate::*;
 
-pub type JsFutureCallback<T> = for<'a> fn(&mut FunctionContext<'a>, JsFutureResult<'a>) -> T;
+pub(crate) trait JsFutureCallback<T> =
+    'static + for<'a> FnOnce(&mut FunctionContext<'a>, JsPromiseResult<'a>) -> T;
 
 pub(crate) enum JsFutureState<T> {
-    Waiting(JsAsyncContext, JsFutureCallback<T>, Option<Waker>),
-    Complete(std::thread::Result<T>),
+    Waiting(
+        JsAsyncContext,
+        Box<dyn JsFutureCallback<NeonResult<T>>>,
+        Option<Waker>,
+    ),
+    Complete(std::thread::Result<Result<T, JsAsyncContextKey<JsValue>>>),
     Consumed,
 }
 
 impl<T> JsFutureState<T> {
-    fn new(context: JsAsyncContext, transform: JsFutureCallback<T>) -> Self {
-        Self::Waiting(context, transform, None)
+    fn new(context: JsAsyncContext, transform: impl JsFutureCallback<NeonResult<T>>) -> Self {
+        Self::Waiting(context, Box::new(transform), None)
     }
 
     fn waiting_on(self, waker: Waker) -> Self {
@@ -48,10 +52,10 @@ pub struct JsFuture<T> {
 }
 
 impl<T> JsFuture<T> {
-    pub(crate) fn set_transform(&mut self, new_transform: JsFutureCallback<T>) {
+    pub(crate) fn set_transform(&mut self, new_transform: impl JsFutureCallback<NeonResult<T>>) {
         let mut state = self.shared.state.replace(JsFutureState::Consumed);
         if let JsFutureState::Waiting(_, ref mut transform, _) = state {
-            *transform = new_transform;
+            *transform = Box::new(new_transform);
         } else {
             panic!("already completed")
         }
@@ -60,7 +64,7 @@ impl<T> JsFuture<T> {
 }
 
 impl<T> Future for JsFuture<T> {
-    type Output = T;
+    type Output = Result<T, JsAsyncContextKey<JsValue>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context) -> Poll<Self::Output> {
         let state = self.shared.state.replace(JsFutureState::Consumed);
@@ -76,7 +80,7 @@ impl<T> Future for JsFuture<T> {
     }
 }
 
-fn resolve_promise<T, R: JsFutureResultConstructor>(
+fn resolve_promise<T, R: JsPromiseResultConstructor>(
     mut cx: FunctionContext,
 ) -> JsResult<JsUndefined> {
     let js_result = cx.argument(1)?;
@@ -88,7 +92,7 @@ fn resolve_promise<T, R: JsFutureResultConstructor>(
 
         if let JsFutureState::Waiting(async_context, transform, waker) = state {
             let result = panic::catch_unwind(AssertUnwindSafe(|| {
-                panic_on_exceptions(&mut cx, |cx| transform(cx, R::make(js_result)))
+                async_context.try_catch(&mut cx, |cx| transform(cx, R::make(js_result)))
             }));
             future.state.set(JsFutureState::Complete(result));
             async_context.resolve_future();
@@ -110,7 +114,8 @@ impl<T> JsFuture<T> {
         cx: &mut FunctionContext<'a>,
         promise: Handle<'a, JsObject>,
         async_context: JsAsyncContext,
-        transform: JsFutureCallback<T>,
+        transform: impl 'static
+            + for<'b> FnOnce(&mut FunctionContext<'b>, JsPromiseResult<'b>) -> NeonResult<T>,
     ) -> Self {
         let cell = Cell::new(JsFutureState::new(async_context, transform));
         let boxed = Rc::pin(JsFutureShared {
@@ -120,7 +125,7 @@ impl<T> JsFuture<T> {
         let boxed_ptr =
             unsafe { Rc::downgrade(&Pin::into_inner_unchecked(boxed.clone())).into_raw() };
 
-        fn bound_resolve_promise<'a, T, R: JsFutureResultConstructor>(
+        fn bound_resolve_promise<'a, T, R: JsPromiseResultConstructor>(
             cx: &mut FunctionContext<'a>,
             boxed_ptr: *const JsFutureShared<T>,
         ) -> Handle<'a, JsValue> {

@@ -5,24 +5,24 @@
 
 use neon::prelude::*;
 
-pub type JsFutureResult<'a> = Result<Handle<'a, JsValue>, Handle<'a, JsValue>>;
+pub type JsPromiseResult<'a> = Result<Handle<'a, JsValue>, Handle<'a, JsValue>>;
 
-pub(crate) trait JsFutureResultConstructor {
-    fn make(value: Handle<JsValue>) -> JsFutureResult;
+pub(crate) trait JsPromiseResultConstructor {
+    fn make(value: Handle<JsValue>) -> JsPromiseResult;
 }
 
 pub(crate) struct JsFulfilledResult;
 
-impl JsFutureResultConstructor for JsFulfilledResult {
-    fn make(value: Handle<JsValue>) -> JsFutureResult {
+impl JsPromiseResultConstructor for JsFulfilledResult {
+    fn make(value: Handle<JsValue>) -> JsPromiseResult {
         Ok(value)
     }
 }
 
 pub(crate) struct JsRejectedResult;
 
-impl JsFutureResultConstructor for JsRejectedResult {
-    fn make(value: Handle<JsValue>) -> JsFutureResult {
+impl JsPromiseResultConstructor for JsRejectedResult {
+    fn make(value: Handle<JsValue>) -> JsPromiseResult {
         Err(value)
     }
 }

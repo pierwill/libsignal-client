@@ -3,7 +3,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 
-const { assert } = require('chai');
+const chai = require('chai');
+const chaiAsPromised = require('chai-as-promised');  
+
+const { assert, expect } = chai;  
+chai.use(chaiAsPromised);  
 
 const native = require(process.env.SIGNAL_NEON_FUTURES_TEST_LIB);
 
@@ -32,7 +36,18 @@ describe('native', () => {
     assert.equal(result, 'error: badness');
   });
 
-  it('recovers from panics', async () => {
-    native.panicOnResolve(Promise.resolve(5));
+  it('promises can fulfill promises', async () => {
+    const result = await native.incrementPromise(Promise.resolve(5));
+    assert.equal(result, 6);
   });
+
+  it('promises can handle rejection', () => {
+    expect(native.incrementPromise(
+      Promise.reject('badness'),
+    )).to.be.rejectedWith('badness');
+  });
+
+  // it('recovers from panics', async () => {
+  //   native.panicOnResolve(Promise.resolve(5));
+  // });
 });

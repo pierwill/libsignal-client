@@ -4,6 +4,7 @@
 //
 
 #![feature(cell_leak)]
+#![feature(trait_alias)]
 
 mod context;
 pub use context::{JsAsyncContext, JsAsyncContextKey};
@@ -12,6 +13,9 @@ mod future;
 pub use future::JsFuture;
 
 mod result;
-pub use result::JsFutureResult;
+pub use result::JsPromiseResult;
+
+mod promise;
+pub use promise::{fulfill_promise, promise};
 
 mod util;

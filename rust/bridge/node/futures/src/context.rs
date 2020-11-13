@@ -13,15 +13,26 @@ use std::panic::{self, AssertUnwindSafe};
 use std::pin::Pin;
 use std::rc::Rc;
 
-use crate::future::*;
 use crate::util::*;
+use crate::*;
 
 pub struct JsFutureBuilder<T> {
     future: JsFuture<T>,
 }
 
 impl<T> JsFutureBuilder<T> {
-    pub fn then(mut self, transform: JsFutureCallback<T>) -> JsFuture<T> {
+    pub fn then(
+        self,
+        transform: impl 'static + for<'a> FnOnce(&'_ mut FunctionContext<'a>, JsPromiseResult<'a>) -> T,
+    ) -> JsFuture<T> {
+        self.then_try(move |cx, result| Ok(transform(cx, result)))
+    }
+
+    pub fn then_try(
+        mut self,
+        transform: impl 'static
+            + for<'a> FnOnce(&mut FunctionContext<'a>, JsPromiseResult<'a>) -> NeonResult<T>,
+    ) -> JsFuture<T> {
         self.future.set_transform(transform);
         self.future
     }
@@ -197,10 +208,7 @@ impl JsAsyncContext {
         result
     }
 
-    pub fn with_context<R>(
-        &self,
-        callback: impl FnOnce(&mut FunctionContext<'_>) -> R,
-    ) -> R {
+    pub fn with_context<R>(&self, callback: impl FnOnce(&mut FunctionContext<'_>) -> R) -> R {
         let context_holder = self
             .shared_state
             .borrow()
@@ -213,6 +221,33 @@ impl JsAsyncContext {
             result = Some(callback(cx));
         });
         result.unwrap() // The callback is always called; we just can't prove it to the compiler.
+    }
+
+    pub(crate) fn try_catch<'a, R>(
+        &self,
+        cx: &mut FunctionContext<'a>,
+        callback: impl FnOnce(&mut FunctionContext<'a>) -> NeonResult<R>,
+    ) -> Result<R, JsAsyncContextKey<JsValue>> {
+        let mut result = None;
+        let success_or_exception = {
+            let mut result = AssertUnwindSafe(&mut result);
+            let callback = AssertUnwindSafe(callback);
+            cx.try_catch(move |cx| {
+                **result = Some(callback.0(cx)?);
+                Ok(cx.undefined())
+            })
+        };
+        match success_or_exception {
+            Ok(_) => Ok(result.unwrap()),
+            Err(exception) => Err(self.register_context_data(cx, exception)),
+        }
+    }
+
+    pub fn try_with_context<R>(
+        &self,
+        callback: impl FnOnce(&mut FunctionContext<'_>) -> NeonResult<R>,
+    ) -> Result<R, JsAsyncContextKey<JsValue>> {
+        self.with_context(move |cx| self.try_catch(cx, callback))
     }
 
     pub fn run(self, cx: &mut FunctionContext, future: impl Future<Output = ()> + 'static) {
@@ -274,24 +309,28 @@ impl JsAsyncContext {
         &self,
         cx: &mut FunctionContext<'a>,
         value: Handle<'a, T>,
-    ) -> NeonResult<JsAsyncContextKey<T>> {
+    ) -> JsAsyncContextKey<T> {
         let raw_key = self.shared_state.borrow().num_globals;
         self.shared_state.borrow_mut().num_globals += 1;
-        self.context_data_object(cx, true).set(cx, raw_key, value)?;
-        Ok(JsAsyncContextKey {
+        self.context_data_object(cx, true)
+            .set(cx, raw_key, value)
+            .expect("setting value on private object");
+        JsAsyncContextKey {
             raw_key,
             _type: PhantomData,
-        })
+        }
     }
 
     pub fn get_context_data<'a, T: neon::types::Value>(
         &self,
         cx: &mut FunctionContext<'a>,
         key: JsAsyncContextKey<T>,
-    ) -> JsResult<'a, T> {
+    ) -> Handle<'a, T> {
         self.context_data_object(cx, false)
-            .get(cx, key.raw_key)?
-            .downcast_or_throw(cx)
+            .get(cx, key.raw_key)
+            .expect("invalid key")
+            .downcast()
+            .expect("type has not changed")
     }
 }
 
