@@ -13,7 +13,6 @@ mod future;
 pub use future::JsFuture;
 
 mod future_builder;
-pub use future_builder::JsFutureBuilder;
 
 mod result;
 pub use result::JsPromiseResult;

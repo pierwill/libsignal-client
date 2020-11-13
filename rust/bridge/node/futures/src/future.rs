@@ -18,7 +18,7 @@ use crate::*;
 pub(crate) trait JsFutureCallback<T> =
     'static + for<'a> FnOnce(&mut FunctionContext<'a>, JsPromiseResult<'a>) -> T;
 
-pub(crate) enum JsFutureState<T> {
+enum JsFutureState<T> {
     Waiting(JsAsyncContext, Box<dyn JsFutureCallback<T>>, Option<Waker>),
     Complete(std::thread::Result<T>),
     Consumed,

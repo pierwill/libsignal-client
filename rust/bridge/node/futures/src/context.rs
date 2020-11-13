@@ -13,6 +13,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::pin::Pin;
 use std::rc::Rc;
 
+use crate::future_builder::JsFutureBuilder;
 use crate::util::*;
 use crate::*;
 
