@@ -52,12 +52,24 @@ pub struct JsFuture<T> {
 }
 
 impl<T> JsFuture<T> {
+    pub(crate) fn err(error: JsAsyncContextKey<JsValue>) -> Self {
+        let state = Cell::new(JsFutureState::Complete(Ok(Err(error))));
+        Self {
+            shared: Rc::pin(JsFutureShared {
+                state, 
+                _pinned: PhantomPinned
+            })
+        }
+    }
+
     pub(crate) fn set_transform(&mut self, new_transform: impl JsFutureCallback<NeonResult<T>>) {
         let mut state = self.shared.state.replace(JsFutureState::Consumed);
-        if let JsFutureState::Waiting(_, ref mut transform, _) = state {
-            *transform = Box::new(new_transform);
-        } else {
-            panic!("already completed")
+        match state {
+            JsFutureState::Waiting(_, ref mut transform, _) => *transform = Box::new(new_transform),
+            JsFutureState::Complete(Ok(Err(_))) => {
+                // We may have thrown a JavaScript error while the future is being constructed.
+            }
+            _ => panic!("already completed")
         }
         self.shared.state.set(state);
     }

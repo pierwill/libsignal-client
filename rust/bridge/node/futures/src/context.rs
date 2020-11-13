@@ -294,14 +294,14 @@ impl JsAsyncContext {
 
     pub fn await_promise<T>(
         &self,
-        mut promise_callback: impl for<'a> FnMut(&mut FunctionContext<'a>) -> Handle<'a, JsObject>,
+        mut promise_callback: impl for<'a> FnMut(&mut FunctionContext<'a>) -> JsResult<'a, JsObject>,
     ) -> JsFutureBuilder<T> {
-        let future = self.with_context(|cx| {
-            let promise = promise_callback(cx);
-            JsFuture::new(cx, promise, self.clone(), |_cx, _handle| {
+        let future = self.try_with_context(|cx| {
+            let promise = promise_callback(cx)?;
+            Ok(JsFuture::new(cx, promise, self.clone(), |_cx, _handle| {
                 panic!("no transform set yet") // FIXME
-            })
-        });
+            }))
+        }).unwrap_or_else(|e| JsFuture::err(e));
         JsFutureBuilder { future }
     }
 

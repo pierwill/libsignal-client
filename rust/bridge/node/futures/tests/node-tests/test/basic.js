@@ -4,10 +4,10 @@
 //
 
 const chai = require('chai');
-const chaiAsPromised = require('chai-as-promised');  
+const chaiAsPromised = require('chai-as-promised');
 
-const { assert, expect } = chai;  
-chai.use(chaiAsPromised);  
+const { assert, expect } = chai;
+chai.use(chaiAsPromised);
 
 const native = require(process.env.SIGNAL_NEON_FUTURES_TEST_LIB);
 
@@ -31,54 +31,74 @@ describe('native', () => {
 
   it('can handle rejection', async () => {
     const result = await promisify(native.incrementAsync)(
-      Promise.reject('badness'),
+      Promise.reject('badness')
     );
     assert.equal(result, 'error: badness');
   });
 
-  it('promises can fulfill promises', async () => {
-    const result = await native.incrementPromise(Promise.resolve(5));
-    assert.equal(result, 6);
-  });
+  it('can handle store-like callbacks', async () => {
+    const result = await native.doubleNameFromStore({ getName: () => Promise.resolve('Moxie') });
+    assert.equal(result, 'Moxie Moxie');
+  })
 
-  it('promises can handle rejection', () => {
-    const promise = native.incrementPromise(
-      Promise.reject('badness'),
-    )
-    return assert.isRejected(promise, /badness/);
+  it('can handle store-like callbacks that fail', async () => {
+    const promise = native.doubleNameFromStore({ getName: () => Promise.reject('uh oh') });
+    await assert.isRejected(promise, /rejected: uh oh/)
+  })
+
+  describe('promises', () => {
+    it('can fulfill promises', async () => {
+      const result = await native.incrementPromise(Promise.resolve(5));
+      assert.equal(result, 6);
+    });
+
+    it('can handle rejection', async () => {
+      const promise = native.incrementPromise(Promise.reject('badness'));
+      await assert.isRejected(promise, /badness/);
+    });
   });
 
   describe('recovery', () => {
-    it('handles pre-await panics', () => {
-      const promise = native.panicPreAwait(
-        Promise.resolve(6),
-      );
-      return assert.isRejected(promise, /unexpected panic: check for this/);
-      
-    })
+    it('handles pre-await panics', async () => {
+      const promise = native.panicPreAwait(Promise.resolve(6));
+      await assert.isRejected(promise, /unexpected panic: check for this/);
+    });
 
-    it('handles callback panics', () => {
-      const promise = native.panicDuringCallback(
-        Promise.resolve(6),
-      );
-      return assert.isRejected(promise, /unexpected panic: check for this/);
-      
-    })
+    it('handles callback panics', async () => {
+      const promise = native.panicDuringCallback(Promise.resolve(6));
+      await assert.isRejected(promise, /unexpected panic: check for this/);
+    });
 
-    it('handles post-await panics', () => {
-      const promise = native.panicPostAwait(
-        Promise.resolve(6),
-      );
-      return assert.isRejected(promise, /unexpected panic: check for this/);
-      
-    })
+    it('handles post-await panics', async () => {
+      const promise = native.panicPostAwait(Promise.resolve(6));
+      await assert.isRejected(promise, /unexpected panic: check for this/);
+    });
 
-    it('handles fulfillment panics', () => {
-      const promise = native.panicDuringFulfill(
-        Promise.resolve(6),
-      );
-      return assert.isRejected(promise, /unexpected panic: check for this/);
-      
-    })
+    it('handles fulfillment panics', async () => {
+      const promise = native.panicDuringFulfill(Promise.resolve(6));
+      await assert.isRejected(promise, /unexpected panic: check for this/);
+    });
+  });
+
+  describe('recovery', () => {
+    it('handles pre-await throws', async () => {
+      const promise = native.throwPreAwait(Promise.resolve(6));
+      await assert.isRejected(promise, /^check for this$/);
+    });
+
+    it('handles callback throws', async () => {
+      const promise = native.throwDuringCallback(Promise.resolve(6));
+      await assert.isRejected(promise, /^check for this$/);
+    });
+
+    it('handles post-await throws', async () => {
+      const promise = native.throwPostAwait(Promise.resolve(6));
+      await assert.isRejected(promise, /^check for this$/);
+    });
+
+    it('handles fulfillment throws', async () => {
+      const promise = native.throwDuringFulfill(Promise.resolve(6));
+      await assert.isRejected(promise, /^check for this$/);
+    });
   });
 });
