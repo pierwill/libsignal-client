@@ -82,6 +82,7 @@ impl Drop for JsAsyncContextImpl {
 
 #[derive(Clone, Copy)]
 pub struct JsAsyncContextKey<T: neon::types::Value> {
+    context_id: *const (),
     raw_key: u32,
     // https://doc.rust-lang.org/std/marker/struct.PhantomData.html#ownership-and-the-drop-check
     _type: PhantomData<*const T>,
@@ -186,6 +187,10 @@ impl JsAsyncContext {
         self.shared_state.borrow_mut().num_pending_js_futures -= 1
     }
 
+    fn opaque_id(&self) -> *const () {
+        self.shared_state.as_ptr() as *const ()
+    }
+
     pub fn new() -> Self {
         let result = Self {
             shared_state: Rc::pin(RefCell::new(JsAsyncContextImpl {
@@ -199,8 +204,8 @@ impl JsAsyncContext {
             })),
         };
         result.shared_state.borrow_mut().global_key = format!(
-            "__signal_neon_futures::JsAsyncContext({:x})",
-            result.shared_state.as_ptr() as usize
+            "__signal_neon_futures::JsAsyncContext({:p})",
+            result.opaque_id()
         );
         result
     }
@@ -315,6 +320,7 @@ impl JsAsyncContext {
             .set(cx, raw_key, value)
             .expect("setting value on private object");
         JsAsyncContextKey {
+            context_id: self.opaque_id(),
             raw_key,
             _type: PhantomData,
         }
@@ -325,6 +331,10 @@ impl JsAsyncContext {
         cx: &mut FunctionContext<'a>,
         key: JsAsyncContextKey<T>,
     ) -> Handle<'a, T> {
+        assert!(
+            key.context_id == self.opaque_id(),
+            "Key used for a different JsAsyncContext"
+        );
         self.context_data_object(cx, false)
             .get(cx, key.raw_key)
             .expect("invalid key")
