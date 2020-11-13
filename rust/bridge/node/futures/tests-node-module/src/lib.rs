@@ -41,22 +41,6 @@ fn increment_async(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     Ok(cx.undefined())
 }
 
-fn panic_on_resolve(mut cx: FunctionContext) -> JsResult<JsUndefined> {
-    let promise = cx.argument::<JsObject>(0)?;
-
-    let future_context = JsAsyncContext::new();
-    let promise_key = future_context.register_context_data(&mut cx, promise);
-
-    future_context.clone().run(&mut cx, async move {
-        let future = future_context
-            .await_promise(|cx| future_context.get_context_data(cx, promise_key))
-            .then(|_cx, _result| panic!("hello"));
-        future.await;
-    });
-
-    Ok(cx.undefined())
-}
-
 fn increment_promise(mut cx: FunctionContext) -> JsResult<JsObject> {
     let promise = cx.argument::<JsObject>(0)?;
 
@@ -72,9 +56,82 @@ fn increment_promise(mut cx: FunctionContext) -> JsResult<JsObject> {
     })
 }
 
+#[allow(unreachable_code, unused_variables)]
+fn panic_pre_await(mut cx: FunctionContext) -> JsResult<JsObject> {
+    let promise = cx.argument::<JsObject>(0)?;
+
+    signal_neon_futures::promise(&mut cx, |cx, future_context| {
+        let future = JsFuture::new(cx, promise, future_context, |cx, result| {
+            let value = result.or_else(|e| cx.throw(e))?;
+            Ok(value.downcast_or_throw::<JsNumber, _>(cx)?.value())
+        });
+        async move {
+            panic!("check for this");
+            future.await?;
+            fulfill_promise(move |cx| Ok(cx.undefined()))
+        }
+    })
+}
+
+#[allow(unreachable_code)]
+fn panic_during_callback(mut cx: FunctionContext) -> JsResult<JsObject> {
+    let promise = cx.argument::<JsObject>(0)?;
+
+    signal_neon_futures::promise(&mut cx, |cx, future_context| {
+        let future = JsFuture::new(cx, promise, future_context, |_cx, _result| {
+            panic!("check for this")
+        });
+        async move {
+            future.await?;
+            fulfill_promise(move |cx| Ok(cx.undefined()))
+        }
+    })
+}
+
+#[allow(unreachable_code)]
+fn panic_post_await(mut cx: FunctionContext) -> JsResult<JsObject> {
+    let promise = cx.argument::<JsObject>(0)?;
+
+    signal_neon_futures::promise(&mut cx, |cx, future_context| {
+        let future = JsFuture::new(cx, promise, future_context, |cx, result| {
+            let value = result.or_else(|e| cx.throw(e))?;
+            Ok(value.downcast_or_throw::<JsNumber, _>(cx)?.value())
+        });
+        async move {
+            future.await?;
+            panic!("check for this");
+            fulfill_promise(move |cx| Ok(cx.undefined()))
+        }
+    })
+}
+
+#[allow(unreachable_code, unused_variables)]
+fn panic_during_fulfill(mut cx: FunctionContext) -> JsResult<JsObject> {
+    let promise = cx.argument::<JsObject>(0)?;
+
+    signal_neon_futures::promise(&mut cx, |cx, future_context| {
+        let future = JsFuture::new(cx, promise, future_context, |cx, result| {
+            let value = result.or_else(|e| cx.throw(e))?;
+            Ok(value.downcast_or_throw::<JsNumber, _>(cx)?.value())
+        });
+        async move {
+            future.await?;
+            fulfill_promise(move |cx| {
+                panic!("check for this");
+                Ok(cx.undefined())
+            })
+        }
+    })
+}
+
 register_module!(mut cx, {
     cx.export_function("incrementAsync", increment_async)?;
     cx.export_function("incrementPromise", increment_promise)?;
-    cx.export_function("panicOnResolve", panic_on_resolve)?;
+
+    cx.export_function("panicPreAwait", panic_pre_await)?;
+    cx.export_function("panicDuringCallback", panic_during_callback)?;
+    cx.export_function("panicPostAwait", panic_post_await)?;
+    cx.export_function("panicDuringFulfill", panic_during_fulfill)?;
+
     Ok(())
 });

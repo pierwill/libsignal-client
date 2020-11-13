@@ -3,10 +3,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 
+use futures::FutureExt;
 use neon::prelude::*;
 use std::future::Future;
-use std::panic::AssertUnwindSafe;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
+use crate::util::describe_any;
 use crate::*;
 
 fn save_promise_callbacks(mut cx: FunctionContext) -> JsResult<JsUndefined> {
@@ -46,18 +48,29 @@ where
     let promise_object_key = future_context.register_context_data(cx, object);
 
     future_context.clone().run(cx, async move {
-        let result = future.await;
+        let result = AssertUnwindSafe(future).catch_unwind().await;
 
         // Any JavaScript errors that happen here (as opposed to in the result callback)
         // are beyond our ability to recover.
         // Ignore them and let JsAsyncContext complain about the uncaught errors.
-        let _ = future_context.with_context(|cx| -> NeonResult<()> {
-            let result = result.map_err(|key| future_context.get_context_data(cx, key));
-            let result = result.and_then(|resolve| {
-                let resolve = AssertUnwindSafe(resolve);
-                cx.try_catch(|cx| resolve.0(cx))
+        let _ = future_context.with_context(|mut cx| -> NeonResult<()> {
+            let resolved_result = match result {
+                Ok(Ok(resolve)) => {
+                    let resolve = AssertUnwindSafe(resolve);
+                    let mut cx = AssertUnwindSafe(&mut cx);
+                    catch_unwind(move || cx.try_catch(|cx| resolve.0(cx)))
+                }
+                Ok(Err(saved_error)) => Ok(Err(future_context.get_context_data(cx, saved_error))),
+                Err(panic) => Err(panic),
+            };
+            let folded_result = resolved_result.unwrap_or_else(|panic| {
+                Err(cx
+                    .error(format!("unexpected panic: {}", describe_any(&panic)))
+                    .expect("can create an Error")
+                    .upcast())
             });
-            let (value, callback_name) = match result {
+
+            let (value, callback_name) = match folded_result {
                 Ok(value) => (value.upcast(), "_resolve"),
                 Err(exception) => (exception, "_reject"),
             };

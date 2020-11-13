@@ -42,12 +42,43 @@ describe('native', () => {
   });
 
   it('promises can handle rejection', () => {
-    expect(native.incrementPromise(
+    const promise = native.incrementPromise(
       Promise.reject('badness'),
-    )).to.be.rejectedWith('badness');
+    )
+    return assert.isRejected(promise, /badness/);
   });
 
-  // it('recovers from panics', async () => {
-  //   native.panicOnResolve(Promise.resolve(5));
-  // });
+  describe('recovery', () => {
+    it('handles pre-await panics', () => {
+      const promise = native.panicPreAwait(
+        Promise.resolve(6),
+      );
+      return assert.isRejected(promise, /unexpected panic: check for this/);
+      
+    })
+
+    it('handles callback panics', () => {
+      const promise = native.panicDuringCallback(
+        Promise.resolve(6),
+      );
+      return assert.isRejected(promise, /unexpected panic: check for this/);
+      
+    })
+
+    it('handles post-await panics', () => {
+      const promise = native.panicPostAwait(
+        Promise.resolve(6),
+      );
+      return assert.isRejected(promise, /unexpected panic: check for this/);
+      
+    })
+
+    it('handles fulfillment panics', () => {
+      const promise = native.panicDuringFulfill(
+        Promise.resolve(6),
+      );
+      return assert.isRejected(promise, /unexpected panic: check for this/);
+      
+    })
+  });
 });
