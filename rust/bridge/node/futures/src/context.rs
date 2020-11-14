@@ -22,7 +22,7 @@ trait CurrentContext {
 }
 
 struct CurrentContextImpl<'a, 'b> {
-    context: &'b RefCell<FunctionContext<'a>>,
+    context: RefCell<&'b mut FunctionContext<'a>>,
 }
 
 impl<'a, 'b> CurrentContext for CurrentContextImpl<'a, 'b> {
@@ -85,52 +85,46 @@ impl JsAsyncContext {
             cx_ref.try_catch(move |cx| {
                 action.0(cx);
 
-                // While running, we use a RefCell to dynamically check access to the JS context. But a RefCell has to own its data.
-                // as_ref_cell allows us to take the context out of its current reference and put it back later,
-                // like a more advanced version of std::mem::replace.
-                as_ref_cell(cx, |cx| {
-                    let c = &CurrentContextImpl { context: cx };
-                    // Lie about the lifetime of `c` so that it can be accessed from arbitrary call sites.
-                    // "This is advanced, very unsafe Rust!" - std::mem::transmute docs on lifetime extension.
-                    #[allow(clippy::transmute_ptr_to_ptr)]
-                    let opaque_c = unsafe {
-                        std::mem::transmute::<&dyn CurrentContext, &'static dyn CurrentContext>(c)
+                let c = &CurrentContextImpl {
+                    context: RefCell::new(cx),
+                };
+                // Lie about the lifetime of `c` so that it can be accessed from arbitrary call sites.
+                // "This is advanced, very unsafe Rust!" - std::mem::transmute docs on lifetime extension.
+                #[allow(clippy::transmute_ptr_to_ptr)]
+                let opaque_c = unsafe {
+                    std::mem::transmute::<&dyn CurrentContext, &'static dyn CurrentContext>(c)
+                };
+
+                let prev_context = self_
+                    .0
+                    .shared_state
+                    .borrow_mut()
+                    .very_unsafe_current_context
+                    .replace(opaque_c);
+
+                let guarded_self = scopeguard::guard(self_.0, |self_| {
+                    // If this is the last reference, destroy it while the JavaScript context is still available.
+                    // Otherwise, clean up manually.
+                    match Rc::try_unwrap(unsafe { Pin::into_inner_unchecked(self_.shared_state) }) {
+                        Ok(state) => std::mem::drop(state),
+                        Err(shared_state) => {
+                            shared_state.borrow_mut().very_unsafe_current_context = prev_context;
+                        }
                     };
-
-                    let prev_context = self_
-                        .0
-                        .shared_state
-                        .borrow_mut()
-                        .very_unsafe_current_context
-                        .replace(opaque_c);
-
-                    let guarded_self = scopeguard::guard(self_.0, |self_| {
-                        // If this is the last reference, destroy it while the JavaScript context is still available.
-                        // Otherwise, clean up manually.
-                        match Rc::try_unwrap(unsafe {
-                            Pin::into_inner_unchecked(self_.shared_state)
-                        }) {
-                            Ok(state) => std::mem::drop(state),
-                            Err(shared_state) => {
-                                shared_state.borrow_mut().very_unsafe_current_context =
-                                    prev_context;
-                            }
-                        };
-                    });
-
-                    let maybe_pool = guarded_self.shared_state.borrow_mut().pool.take();
-                    if let Some(mut pool) = maybe_pool {
-                        pool.run_until_stalled();
-                        let mut shared_state = guarded_self.shared_state.borrow_mut();
-                        assert!(
-                            shared_state.complete || shared_state.num_pending_js_futures > 0,
-                            "only supports blocking on JavaScript futures"
-                        );
-                        shared_state.pool = Some(pool);
-                    } else {
-                        // We're in a recursive call and the pool will continue to be processed when we return.
-                    }
                 });
+
+                let maybe_pool = guarded_self.shared_state.borrow_mut().pool.take();
+                if let Some(mut pool) = maybe_pool {
+                    pool.run_until_stalled();
+                    let mut shared_state = guarded_self.shared_state.borrow_mut();
+                    assert!(
+                        shared_state.complete || shared_state.num_pending_js_futures > 0,
+                        "only supports blocking on JavaScript futures"
+                    );
+                    shared_state.pool = Some(pool);
+                } else {
+                    // We're in a recursive call and the pool will continue to be processed when we return.
+                }
 
                 // Dummy return value; see https://github.com/neon-bindings/neon/issues/630
                 Ok(cx.undefined())
