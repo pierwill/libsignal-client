@@ -173,7 +173,7 @@ impl<T> JsFuture<T> {
         promise: Handle<'a, JsObject>,
         async_context: JsAsyncContext,
         transform: impl 'static + for<'b> FnOnce(&mut FunctionContext<'b>, JsPromiseResult<'b>) -> T,
-    ) -> Self {
+    ) -> NeonResult<Self> {
         let cell = Cell::new(JsFutureState::new(async_context, transform));
         let boxed = Rc::pin(JsFutureShared {
             state: cell,
@@ -185,32 +185,27 @@ impl<T> JsFuture<T> {
         fn bound_fulfill_promise<'a, T, R: JsPromiseResultConstructor>(
             cx: &mut FunctionContext<'a>,
             boxed_ptr: *const JsFutureShared<T>,
-        ) -> Handle<'a, JsValue> {
+        ) -> JsResult<'a, JsValue> {
             let fulfill =
-                JsFunction::new(cx, fulfill_promise::<T, R>).expect("can create function");
+                JsFunction::new(cx, fulfill_promise::<T, R>)?;
             let bind = fulfill
-                .get(cx, "bind")
-                .expect("bind() exists")
-                .downcast::<JsFunction>()
-                .expect("bind() is a function");
+                .get(cx, "bind")?
+                .downcast_or_throw::<JsFunction, _>(cx)?;
             let bind_args = vec![
                 cx.undefined().upcast::<JsValue>(),
                 cx.number(f64::from_bits(boxed_ptr as u64)).upcast(),
             ];
-            bind.call(cx, fulfill, bind_args).expect("can call bind()")
+            bind.call(cx, fulfill, bind_args)
         }
 
-        let bound_resolve = bound_fulfill_promise::<_, JsResolvedResult>(cx, boxed_ptr);
-        let bound_reject = bound_fulfill_promise::<_, JsRejectedResult>(cx, boxed_ptr);
+        let bound_resolve = bound_fulfill_promise::<_, JsResolvedResult>(cx, boxed_ptr)?;
+        let bound_reject = bound_fulfill_promise::<_, JsRejectedResult>(cx, boxed_ptr)?;
 
         let then = promise
-            .get(cx, "then")
-            .expect("then() exists")
-            .downcast::<JsFunction>()
-            .expect("then() is a function");
-        then.call(cx, promise, vec![bound_resolve, bound_reject])
-            .expect("can call then()");
+            .get(cx, "then")?
+            .downcast_or_throw::<JsFunction, _>(cx)?;
+        then.call(cx, promise, vec![bound_resolve, bound_reject])?;
 
-        Self { shared: boxed }
+        Ok(Self { shared: boxed })
     }
 }

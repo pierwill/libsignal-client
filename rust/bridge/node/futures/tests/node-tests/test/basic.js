@@ -62,6 +62,13 @@ describe('native', () => {
       const promise = native.incrementPromise(Promise.reject('badness'));
       await assert.isRejected(promise, /badness/);
     });
+
+    it('recovers from non-promises', async () => {
+      assert.throws(
+        () => native.incrementPromise('badness'),
+        /failed to downcast .+ to object/
+      );
+    });
   });
 
   describe('panic recovery', () => {

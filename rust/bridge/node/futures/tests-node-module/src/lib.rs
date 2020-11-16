@@ -55,14 +55,16 @@ fn increment_promise(mut cx: FunctionContext) -> JsResult<JsObject> {
     let promise = cx.argument::<JsObject>(0)?;
 
     signal_neon_futures::promise(&mut cx, |cx, future_context| {
-        let future = JsFuture::new(cx, promise, future_context.clone(), move |cx, result| {
-            future_context.try_catch(cx, |cx| {
-                let value = result.or_else(|e| cx.throw(e))?;
-                Ok(value.downcast_or_throw::<JsNumber, _>(cx)?.value())
+        let future = future_context.clone().try_catch(cx, |cx| {
+            JsFuture::new(cx, promise, future_context.clone(), move |cx, result| {
+                future_context.try_catch(cx, |cx| {
+                    let value = result.or_else(|e| cx.throw(e))?;
+                    Ok(value.downcast_or_throw::<JsNumber, _>(cx)?.value())
+                })
             })
         });
         async move {
-            let value = future.await?;
+            let value = future?.await?;
             fulfill_promise(move |cx| Ok(cx.number(value + 1.0)))
         }
     })

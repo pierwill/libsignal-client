@@ -379,9 +379,9 @@ impl JsAsyncContext {
     ) -> JsFutureBuilder<T> {
         let future = self.try_with_context(|cx| {
             let promise = promise_callback(cx)?;
-            Ok(JsFuture::new(cx, promise, self.clone(), |_cx, _handle| {
+            JsFuture::new(cx, promise, self.clone(), |_cx, _handle| {
                 panic!("no transform set yet")
-            }))
+            })
         });
         JsFutureBuilder {
             async_context: self,
