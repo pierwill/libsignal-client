@@ -92,7 +92,7 @@ impl<T> JsFuture<T> {
 
     /// Creates a completed future, as if already resolved.
     ///
-    /// Used by [JsAsyncContext::await_failure] to treat thrown exceptions as rejections.
+    /// Used by [JsAsyncContext::await_promise] to treat thrown exceptions as rejections.
     pub(crate) fn ready(result: T) -> Self {
         Self {
             shared: Rc::pin(JsFutureShared {

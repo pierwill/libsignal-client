@@ -230,7 +230,7 @@ impl JsAsyncContext {
 
     /// Notes that a future has been fulfilled.
     ///
-    /// See also [register_future].
+    /// See also [register_future](fn@Self::register_future).
     pub(crate) fn fulfill_future(&self) {
         self.shared_state.borrow_mut().num_pending_js_futures -= 1
     }
