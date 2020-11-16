@@ -6,7 +6,7 @@
 use neon::prelude::*;
 use signal_neon_futures::*;
 
-#[allow(unreachable_code, unused_variables)]
+#[allow(unreachable_code, unused_variables, clippy::redundant_clone)]
 pub fn panic_pre_await(mut cx: FunctionContext) -> JsResult<JsObject> {
     let promise = cx.argument::<JsObject>(0)?;
 
@@ -27,7 +27,7 @@ pub fn panic_pre_await(mut cx: FunctionContext) -> JsResult<JsObject> {
     })
 }
 
-#[allow(unreachable_code)]
+#[allow(unreachable_code, clippy::redundant_clone)]
 pub fn panic_during_callback(mut cx: FunctionContext) -> JsResult<JsObject> {
     let promise = cx.argument::<JsObject>(0)?;
 
@@ -44,7 +44,7 @@ pub fn panic_during_callback(mut cx: FunctionContext) -> JsResult<JsObject> {
     })
 }
 
-#[allow(unreachable_code)]
+#[allow(unreachable_code, clippy::redundant_clone)]
 pub fn panic_post_await(mut cx: FunctionContext) -> JsResult<JsObject> {
     let promise = cx.argument::<JsObject>(0)?;
 
@@ -65,7 +65,7 @@ pub fn panic_post_await(mut cx: FunctionContext) -> JsResult<JsObject> {
     })
 }
 
-#[allow(unreachable_code, unused_variables)]
+#[allow(unreachable_code, unused_variables, clippy::redundant_clone)]
 pub fn panic_during_fulfill(mut cx: FunctionContext) -> JsResult<JsObject> {
     let promise = cx.argument::<JsObject>(0)?;
 
@@ -88,6 +88,7 @@ pub fn panic_during_fulfill(mut cx: FunctionContext) -> JsResult<JsObject> {
     })
 }
 
+#[allow(clippy::redundant_clone)]
 pub fn throw_pre_await(mut cx: FunctionContext) -> JsResult<JsObject> {
     let promise = cx.argument::<JsObject>(0)?;
 
@@ -113,6 +114,7 @@ pub fn throw_pre_await(mut cx: FunctionContext) -> JsResult<JsObject> {
     })
 }
 
+#[allow(clippy::redundant_clone)]
 pub fn throw_during_callback(mut cx: FunctionContext) -> JsResult<JsObject> {
     let promise = cx.argument::<JsObject>(0)?;
 
@@ -132,6 +134,7 @@ pub fn throw_during_callback(mut cx: FunctionContext) -> JsResult<JsObject> {
     })
 }
 
+#[allow(clippy::redundant_clone)]
 pub fn throw_post_await(mut cx: FunctionContext) -> JsResult<JsObject> {
     let promise = cx.argument::<JsObject>(0)?;
 
@@ -157,6 +160,7 @@ pub fn throw_post_await(mut cx: FunctionContext) -> JsResult<JsObject> {
     })
 }
 
+#[allow(clippy::redundant_clone)]
 pub fn throw_during_fulfill(mut cx: FunctionContext) -> JsResult<JsObject> {
     let promise = cx.argument::<JsObject>(0)?;
 
