@@ -186,8 +186,7 @@ impl<T> JsFuture<T> {
             cx: &mut FunctionContext<'a>,
             boxed_ptr: *const JsFutureShared<T>,
         ) -> JsResult<'a, JsValue> {
-            let fulfill =
-                JsFunction::new(cx, fulfill_promise::<T, R>)?;
+            let fulfill = JsFunction::new(cx, fulfill_promise::<T, R>)?;
             let bind = fulfill
                 .get(cx, "bind")?
                 .downcast_or_throw::<JsFunction, _>(cx)?;

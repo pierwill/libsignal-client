@@ -303,13 +303,6 @@ impl JsAsyncContext {
         }
     }
 
-    pub fn try_with_context<R>(
-        &self,
-        callback: impl FnOnce(&mut FunctionContext<'_>) -> NeonResult<R>,
-    ) -> Result<R, JsAsyncContextKey<JsValue>> {
-        self.with_context(move |cx| self.try_catch(cx, callback))
-    }
-
     /// The main entry point for JsAsyncContext, if not using [promise](fn@crate::promise).
     ///
     /// Given a function that *produces* a future (probably an `async` block),
@@ -377,10 +370,12 @@ impl JsAsyncContext {
         &self,
         mut promise_callback: impl for<'a> FnMut(&mut FunctionContext<'a>) -> JsResult<'a, JsObject>,
     ) -> JsFutureBuilder<T> {
-        let future = self.try_with_context(|cx| {
-            let promise = promise_callback(cx)?;
-            JsFuture::new(cx, promise, self.clone(), |_cx, _handle| {
-                panic!("no transform set yet")
+        let future = self.with_context(|cx| {
+            self.try_catch(cx, |cx| {
+                let promise = promise_callback(cx)?;
+                JsFuture::new(cx, promise, self.clone(), |_cx, _handle| {
+                    panic!("no transform set yet")
+                })
             })
         });
         JsFutureBuilder {
