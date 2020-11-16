@@ -12,7 +12,9 @@ use panics_and_throws::*;
 mod store_like;
 use store_like::*;
 
+// function incrementAsync(promise: Promise<number>, resolve: (number | string) => void): void
 fn increment_async(mut cx: FunctionContext) -> JsResult<JsUndefined> {
+    // A complicated test that manually calls a callback at its conclusion.
     let promise = cx.argument::<JsObject>(0)?;
     let completion_callback = cx.argument::<JsFunction>(1)?;
 
@@ -47,7 +49,9 @@ fn increment_async(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     Ok(cx.undefined())
 }
 
+// function incrementPromise(promise: Promise<number>): Promise<number>
 fn increment_promise(mut cx: FunctionContext) -> JsResult<JsObject> {
+    // A much simpler variant that uses the higher abstractions provided by promise.
     let promise = cx.argument::<JsObject>(0)?;
 
     signal_neon_futures::promise(&mut cx, |cx, future_context| {

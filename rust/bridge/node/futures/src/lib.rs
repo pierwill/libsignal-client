@@ -5,6 +5,7 @@
 
 #![feature(cell_leak)]
 #![feature(trait_alias)]
+#![warn(missing_docs)]
 
 mod context;
 pub use context::{JsAsyncContext, JsAsyncContextKey};
@@ -13,6 +14,7 @@ mod future;
 pub use future::JsFuture;
 
 mod future_builder;
+pub use future_builder::JsFutureBuilder;
 
 mod result;
 pub use result::JsPromiseResult;

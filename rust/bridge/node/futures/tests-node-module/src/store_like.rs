@@ -46,6 +46,7 @@ async fn double_name_from_store_impl(store: NameStore) -> Result<String, String>
     Ok(format!("{0} {0}", store.get_name().await?))
 }
 
+// function doubleNameFromStore(store: { getName: () => Promise<string> }): Promise<string>
 pub fn double_name_from_store(mut cx: FunctionContext) -> JsResult<JsObject> {
     let js_store = cx.argument(0)?;
 
