@@ -18,7 +18,7 @@
 //! - The Neon JavaScript context is still lifetime-scoped, so data must be explicitly persisted across `await` points using [JsAsyncContext::register_context_data].
 //! - Because execution is synchronous, no *other* kinds of blocking futures are supported. Any `await` must ultimately bottom out in a JsFuture.
 //!
-//! To get started, look at the [promise] function and the [JsAsyncContext::await_promise] method.
+//! To get started, look at the [promise()] function and the [JsAsyncContext::await_promise] method.
 //!
 //! This crate is definitely pushing the limits of what Neon supports. Use outside of libsignal-client at your own risk.
 //!
