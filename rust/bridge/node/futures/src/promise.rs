@@ -6,7 +6,7 @@
 use futures::FutureExt;
 use neon::prelude::*;
 use std::future::Future;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{catch_unwind, AssertUnwindSafe, UnwindSafe};
 
 use crate::util::describe_any;
 use crate::*;
@@ -67,8 +67,8 @@ pub fn promise<'a, V, F, R>(
 ) -> JsResult<'a, JsObject>
 where
     V: neon::types::Value,
-    F: for<'b> FnOnce(&mut FunctionContext<'b>) -> JsResult<'b, V>,
-    R: Future<Output = Result<F, JsAsyncContextKey<JsValue>>> + 'static,
+    F: for<'b> FnOnce(&mut FunctionContext<'b>) -> JsResult<'b, V> + UnwindSafe,
+    R: Future<Output = Result<F, JsAsyncContextKey<JsValue>>> + UnwindSafe + 'static,
 {
     let mut promise = None;
 
@@ -90,9 +90,7 @@ where
         let promise_object_key = future_context.register_context_data(cx, object);
 
         Ok(async move {
-            // FIXME: This AssertUnwindSafe is actually a little sketchy!
-            // Can JsFuture and JsAsyncContext be marked as UnwindSafe?
-            let result = AssertUnwindSafe(future).catch_unwind().await;
+            let result = future.catch_unwind().await;
 
             // Any JavaScript errors that happen here (as opposed to in the result callback)
             // are beyond our ability to recover.
@@ -100,11 +98,12 @@ where
             let _ = future_context.with_context(|mut cx| -> NeonResult<()> {
                 let resolved_result = match result {
                     Ok(Ok(resolve)) => {
-                        // FIXME: This AssertUnwindSafe is likewise sketchy.
-                        let resolve = AssertUnwindSafe(resolve);
-                        // FIXME: This one's okay, though; the JS context can never be in an inconsistent state itself.
+                        // This AssertUnwindSafe is not technically safe.
+                        // If we get a panic downstream, it is entirely possible the JavaScript context won't be usable anymore.
+                        // However, that's no more unsafe than JsAsyncContext::with_context,
+                        // or for that matter Neon automatically catching panics by default.
                         let mut cx = AssertUnwindSafe(&mut cx);
-                        catch_unwind(move || cx.try_catch(|cx| resolve.0(cx)))
+                        catch_unwind(move || cx.try_catch(|cx| resolve(cx)))
                     }
                     Ok(Err(saved_error)) => {
                         Ok(Err(future_context.get_context_data(cx, saved_error)))

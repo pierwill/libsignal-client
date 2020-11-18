@@ -9,7 +9,7 @@ use neon::prelude::*;
 use std::cell::RefCell;
 use std::future::Future;
 use std::marker::{PhantomData, PhantomPinned};
-use std::panic::{self, AssertUnwindSafe};
+use std::panic::{self, AssertUnwindSafe, RefUnwindSafe, UnwindSafe};
 use std::pin::Pin;
 use std::rc::Rc;
 
@@ -119,6 +119,16 @@ pub struct JsAsyncContext {
     shared_state: Pin<Rc<RefCell<JsAsyncContextImpl>>>,
 }
 
+// A JsAsyncContext's `shared_state` MUST always be borrowed in a way where no panics can occur.
+//
+// This is accomplished by not running arbitrary code while borrowing the state.
+// The compiler does not really have a way to enforce this, however;
+// the whole point of RefCell is that someone is going to borrow the state at runtime.
+impl UnwindSafe for JsAsyncContext {}
+// JsAsyncContext is solely a wrapper around the shared state in JsAsyncContextImpl,
+// so &JsAsyncContext is just as UnwindSafe as JsAsyncContext.
+impl RefUnwindSafe for JsAsyncContext {}
+
 impl JsAsyncContext {
     /// Sets `cx` as the current context and runs `action`, then advances the main future until it stalls again.
     ///
@@ -143,7 +153,6 @@ impl JsAsyncContext {
             // These shouldn't actually be necessary.
             // try_catch only propagates unwinds; it does not resume arbitrary execution after an unwind.
             let action = AssertUnwindSafe(action);
-            let self_ = AssertUnwindSafe(self);
             cx_ref.try_catch(move |cx| {
                 // First run the action, which wants exclusive synchronous use of cx.
                 action.0(cx);
@@ -160,14 +169,13 @@ impl JsAsyncContext {
                 };
 
                 // Swap out the previous context.
-                let prev_context = self_
-                    .0
+                let prev_context = self
                     .shared_state
                     .borrow_mut()
                     .very_unsafe_current_context
                     .replace(opaque_c);
 
-                let guarded_self = scopeguard::guard(self_.0, |self_| {
+                let guarded_self = scopeguard::guard(self, |self_| {
                     // If this is the last reference, destroy it while the JavaScript context is still available.
                     // Otherwise, clean up manually.
                     match Rc::try_unwrap(unsafe { Pin::into_inner_unchecked(self_.shared_state) }) {

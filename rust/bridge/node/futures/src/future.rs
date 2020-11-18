@@ -7,7 +7,7 @@ use neon::prelude::*;
 use std::cell::Cell;
 use std::future::Future;
 use std::marker::PhantomPinned;
-use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe, RefUnwindSafe};
 use std::pin::Pin;
 use std::rc::{Rc, Weak};
 use std::task::{Poll, Waker};
@@ -64,6 +64,9 @@ struct JsFutureShared<T> {
     _pinned: PhantomPinned,
 }
 
+/// A shared JsFuture's Cell MUST never be left with an invalid state (unexpected Consumed) at a point where an uncaught panic could occur.
+impl<T> RefUnwindSafe for JsFutureShared<T> {}
+
 /// A future representing the result of a JavaScript promise.
 ///
 /// JsFutures can be created with the [new](fn@JsFuture::new) method or with the convenience method [JsAsyncContext::await_promise].
@@ -79,7 +82,7 @@ impl<T> JsFuture<T> {
     /// Replaces the current result callback with a new one.
     ///
     /// This is used by [JsFutureBuilder] to make the builder pattern nicer.
-    pub(crate) fn set_transform(&mut self, new_transform: impl JsFutureCallback<T>) {
+    pub(crate) fn with_transform(self, new_transform: impl JsFutureCallback<T>) -> Self {
         let mut state = self.shared.state.replace(JsFutureState::Consumed);
         match state {
             JsFutureState::Waiting {
@@ -88,6 +91,7 @@ impl<T> JsFuture<T> {
             _ => panic!("already completed"),
         }
         self.shared.state.set(state);
+        self
     }
 
     /// Creates a completed future, as if already resolved.
