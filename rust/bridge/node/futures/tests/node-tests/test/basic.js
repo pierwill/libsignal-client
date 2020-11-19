@@ -52,6 +52,20 @@ describe('native', () => {
     await assert.isRejected(promise, /rejected: uh oh/);
   });
 
+  it('can handle parallel store-like callbacks', async () => {
+    const result = await native.doubleNameFromStoreUsingJoin({
+      getName: () => Promise.resolve('Moxie'),
+    });
+    assert.equal(result, 'Moxie Moxie');
+  });
+
+  it('can handle parallel store-like callbacks that fail', async () => {
+    const promise = native.doubleNameFromStoreUsingJoin({
+      getName: () => Promise.reject('uh oh'),
+    });
+    await assert.isRejected(promise, /rejected: uh oh/);
+  });
+
   describe('promises', () => {
     it('can fulfill promises', async () => {
       const result = await native.incrementPromise(Promise.resolve(5));

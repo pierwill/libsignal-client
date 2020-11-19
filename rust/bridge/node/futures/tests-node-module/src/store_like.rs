@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 
+use futures::try_join;
 use neon::prelude::*;
 use signal_neon_futures::*;
 
@@ -43,7 +44,11 @@ impl NameStore {
 }
 
 async fn double_name_from_store_impl(store: NameStore) -> Result<String, String> {
-    Ok(format!("{0} {0}", store.get_name().await?))
+    Ok(format!(
+        "{0} {1}",
+        store.get_name().await?,
+        store.get_name().await?
+    ))
 }
 
 // function doubleNameFromStore(store: { getName: () => Promise<string> }): Promise<string>
@@ -54,6 +59,27 @@ pub fn double_name_from_store(mut cx: FunctionContext) -> JsResult<JsObject> {
         let store = NameStore::new(cx, js_store, future_context);
         async move {
             let result = double_name_from_store_impl(store).await;
+            fulfill_promise(move |cx| match result {
+                Ok(doubled) => Ok(cx.string(doubled)),
+                Err(message) => cx.throw_error(format!("rejected: {}", message)),
+            })
+        }
+    })
+}
+
+async fn double_name_from_store_using_join_impl(store: NameStore) -> Result<String, String> {
+    let names = try_join!(store.get_name(), store.get_name())?;
+    Ok(format!("{0} {1}", names.0, names.1))
+}
+
+// function doubleNameFromStoreUsingJoin(store: { getName: () => Promise<string> }): Promise<string>
+pub fn double_name_from_store_using_join(mut cx: FunctionContext) -> JsResult<JsObject> {
+    let js_store = cx.argument(0)?;
+
+    promise(&mut cx, |cx, future_context| {
+        let store = NameStore::new(cx, js_store, future_context);
+        async move {
+            let result = double_name_from_store_using_join_impl(store).await;
             fulfill_promise(move |cx| match result {
                 Ok(doubled) => Ok(cx.string(doubled)),
                 Err(message) => cx.throw_error(format!("rejected: {}", message)),

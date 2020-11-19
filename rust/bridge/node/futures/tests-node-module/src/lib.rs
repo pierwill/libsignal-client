@@ -76,6 +76,10 @@ register_module!(mut cx, {
     cx.export_function("incrementPromise", increment_promise)?;
 
     cx.export_function("doubleNameFromStore", double_name_from_store)?;
+    cx.export_function(
+        "doubleNameFromStoreUsingJoin",
+        double_name_from_store_using_join,
+    )?;
 
     cx.export_function("panicPreAwait", panic_pre_await)?;
     cx.export_function("panicDuringCallback", panic_during_callback)?;
