@@ -697,6 +697,7 @@ name = "libsignal-bridge"
 version = "0.1.0"
 dependencies = [
  "jni",
+ "libc",
  "libsignal-protocol-rust",
  "paste",
 ]
