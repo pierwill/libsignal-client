@@ -8,6 +8,7 @@ use futures::task::noop_waker_ref;
 use jni::objects::{JObject, JString, JThrowable, JValue};
 use jni::sys::{_jobject, jboolean, jbyteArray, jint, jlong, jobject, jstring};
 use jni::JNIEnv;
+use libsignal_bridge::*;
 use libsignal_protocol_rust::SignalProtocolError;
 use std::convert::TryFrom;
 use std::fmt;
@@ -160,8 +161,6 @@ pub fn throw_error(env: &JNIEnv, error: SignalJniError) {
 
     let _ = env.throw_new(exception_type, error_string);
 }
-
-pub type ObjectHandle = jlong;
 
 pub unsafe fn native_handle_cast<T>(
     handle: ObjectHandle,

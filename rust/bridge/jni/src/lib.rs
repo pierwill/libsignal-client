@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use jni::objects::{JClass, JObject, JString, JValue};
 use jni::sys::{jboolean, jbyteArray, jint, jlong, jobject, jstring};
 use jni::JNIEnv;
+use libsignal_bridge::*;
 use libsignal_protocol_rust::*;
 use std::convert::TryFrom;
 
@@ -39,7 +40,7 @@ pub unsafe extern "C" fn Java_org_signal_client_internal_Native_ProtocolAddress_
     })
 }
 
-jni_fn_destroy!(Java_org_signal_client_internal_Native_ProtocolAddress_1Destroy destroys ProtocolAddress);
+// jni_fn_destroy!(Java_org_signal_client_internal_Native_ProtocolAddress_1Destroy destroys ProtocolAddress);
 
 jni_fn_get_jstring!(Java_org_signal_client_internal_Native_ProtocolAddress_1Name(ProtocolAddress) using
                     |p: &ProtocolAddress| Ok(p.name().to_string()));
