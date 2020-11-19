@@ -116,7 +116,7 @@ pub struct JsAsyncContextKey<T: neon::types::Value> {
 /// Cloning a JsAsyncContext shares the same context; it does not make a fresh one.
 #[derive(Clone)]
 pub struct JsAsyncContext {
-    shared_state: Pin<Rc<RefCell<JsAsyncContextImpl>>>,
+    shared_state: Pin<Rc<UnwindSafetyRefCell<JsAsyncContextImpl>>>,
 }
 
 // A JsAsyncContext's `shared_state` MUST always be borrowed in a way where no panics can occur.
@@ -124,9 +124,10 @@ pub struct JsAsyncContext {
 // This is accomplished by not running arbitrary code while borrowing the state.
 // The compiler does not really have a way to enforce this, however;
 // the whole point of RefCell is that someone is going to borrow the state at runtime.
+// The use of [UnwindSafetyRefCell] is intended to be a reminder.
 impl UnwindSafe for JsAsyncContext {}
 // JsAsyncContext is solely a wrapper around the shared state in JsAsyncContextImpl,
-// so &JsAsyncContext is just as UnwindSafe as JsAsyncContext.
+// so we already have to think about RefUnwindSafe in declaring UnwindSafe.
 impl RefUnwindSafe for JsAsyncContext {}
 
 impl JsAsyncContext {
@@ -167,39 +168,42 @@ impl JsAsyncContext {
                 let opaque_c = unsafe {
                     std::mem::transmute::<&dyn CurrentContext, &'static dyn CurrentContext>(c)
                 };
+                // Unwinding is safe here because we will immediately abort if we actually unwind (see below).
+                let opaque_c = AssertUnwindSafe(opaque_c);
 
-                // Swap out the previous context.
-                let prev_context = self
-                    .shared_state
-                    .borrow_mut()
-                    .very_unsafe_current_context
-                    .replace(opaque_c);
-
-                let guarded_self = scopeguard::guard(self, |self_| {
-                    // If this is the last reference, destroy it while the JavaScript context is still available.
-                    // Otherwise, clean up manually.
-                    match Rc::try_unwrap(unsafe { Pin::into_inner_unchecked(self_.shared_state) }) {
-                        Ok(state) => std::mem::drop(state),
-                        Err(shared_state) => {
-                            shared_state.borrow_mut().very_unsafe_current_context = prev_context;
-                        }
-                    };
-                });
+                // Set the current context.
+                self.shared_state
+                    .update(|state| state.very_unsafe_current_context = Some(opaque_c.0));
 
                 // Advance the top-level future until it gets blocked again.
                 // Note the lifetime dance here: we avoid borrowing shared_state while running the pool, and then borrow it again to put the pool back.
-                let maybe_pool = guarded_self.shared_state.borrow_mut().pool.take();
-                if let Some(mut pool) = maybe_pool {
-                    pool.run_until_stalled();
-                    let mut shared_state = guarded_self.shared_state.borrow_mut();
+                let mut pool = self
+                    .shared_state
+                    .update(|state| state.pool.take())
+                    .expect("re-entrant JavaScript execution not supported with JsAsyncContext");
+                pool.run_until_stalled();
+                // Unwinding is safe here because we will immediately abort if we actually unwind (see below).
+                let pool = AssertUnwindSafe(pool);
+                self.shared_state.update(|state| {
                     assert!(
-                        shared_state.complete || shared_state.num_pending_js_futures > 0,
+                        state.complete || state.num_pending_js_futures > 0,
                         "only supports blocking on JavaScript futures"
                     );
-                    shared_state.pool = Some(pool);
-                } else {
-                    // We're in a recursive call and the pool will continue to be processed when we return.
-                }
+                    state.pool = Some(pool.0);
+                });
+
+                // If this is the last reference, destroy it while the JavaScript context is still available.
+                // Otherwise, clean up manually.
+                // Normally we'd want to do this using something like [scopeguard][],
+                // but we're not planning to recover from panics here anyway (see below).
+                //
+                // [scopeguard]: https://docs.rs/scopeguard/1.1.0/scopeguard/
+                match Rc::try_unwrap(unsafe { Pin::into_inner_unchecked(self.shared_state) }) {
+                    Ok(state) => std::mem::drop(state),
+                    Err(shared_state) => {
+                        shared_state.update(|state| state.very_unsafe_current_context = None)
+                    }
+                };
 
                 // Dummy return value; see https://github.com/neon-bindings/neon/issues/630
                 Ok(cx.undefined())
@@ -233,27 +237,29 @@ impl JsAsyncContext {
 
     /// Tracks outstanding futures to make sure there's always something to block on.
     pub(crate) fn register_future(&self) {
-        self.shared_state.borrow_mut().num_pending_js_futures += 1
+        self.shared_state
+            .update(|state| state.num_pending_js_futures += 1)
     }
 
     /// Notes that a future has been fulfilled.
     ///
     /// See also [register_future](fn@Self::register_future).
     pub(crate) fn fulfill_future(&self) {
-        self.shared_state.borrow_mut().num_pending_js_futures -= 1
+        self.shared_state
+            .update(|state| state.num_pending_js_futures -= 1)
     }
 
     /// Returns the unique, pinned address associated with this context.
     ///
     /// Used for context data.
     fn opaque_id(&self) -> *const () {
-        self.shared_state.as_ptr() as *const ()
+        self.shared_state.as_address()
     }
 
     /// Initializes a fresh context.
     fn new() -> Self {
         let result = Self {
-            shared_state: Rc::pin(RefCell::new(JsAsyncContextImpl {
+            shared_state: Rc::pin(UnwindSafetyRefCell::new(JsAsyncContextImpl {
                 very_unsafe_current_context: None,
                 num_pending_js_futures: 0,
                 complete: false,
@@ -263,10 +269,12 @@ impl JsAsyncContext {
                 _pinned: PhantomPinned,
             })),
         };
-        result.shared_state.borrow_mut().global_key = format!(
-            "__signal_neon_futures::JsAsyncContext({:p})",
-            result.opaque_id()
-        );
+        result.shared_state.update(|state| {
+            state.global_key = format!(
+                "__signal_neon_futures::JsAsyncContext({:p})",
+                result.opaque_id()
+            );
+        });
         result
     }
 
@@ -353,7 +361,9 @@ impl JsAsyncContext {
                     spawner
                         .spawn_local(async move {
                             future.unwrap().0.await;
-                            async_context.shared_state.borrow_mut().complete = true;
+                            async_context
+                                .shared_state
+                                .update(|state| state.complete = true)
                         })
                         .expect("can spawn at the top level of an operation");
                 }
@@ -428,7 +438,7 @@ impl JsAsyncContext {
         value: Handle<'a, T>,
     ) -> JsAsyncContextKey<T> {
         let raw_key = self.shared_state.borrow().next_global_id;
-        self.shared_state.borrow_mut().next_global_id += 1;
+        self.shared_state.update(|state| state.next_global_id += 1);
         self.context_data_object(cx, true)
             .set(cx, raw_key, value)
             .expect("setting value on private object");

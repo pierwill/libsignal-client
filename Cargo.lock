@@ -1260,7 +1260,6 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "neon",
- "scopeguard",
  "signal-neon-futures-tests",
 ]
 
@@ -1268,6 +1267,7 @@ dependencies = [
 name = "signal-neon-futures-tests"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "neon",
  "neon-build",
  "signal-neon-futures",
