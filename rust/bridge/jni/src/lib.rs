@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use jni::objects::{JClass, JObject, JString, JValue};
 use jni::sys::{jboolean, jbyteArray, jint, jlong, jobject, jstring};
 use jni::JNIEnv;
-use libsignal_bridge::support_jni::*;
+use libsignal_bridge::jni::*;
 use libsignal_protocol_rust::*;
 use std::convert::TryFrom;
 

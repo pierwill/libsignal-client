@@ -8,7 +8,7 @@ use futures::task::noop_waker_ref;
 use jni::objects::{JObject, JString, JThrowable, JValue};
 use jni::sys::{jbyteArray, jint, jlong, jobject};
 use jni::JNIEnv;
-use libsignal_bridge::support_jni::*;
+use libsignal_bridge::jni::*;
 use libsignal_protocol_rust::SignalProtocolError;
 use std::convert::TryFrom;
 use std::future::Future;
