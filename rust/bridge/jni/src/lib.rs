@@ -40,8 +40,6 @@ pub unsafe extern "C" fn Java_org_signal_client_internal_Native_ProtocolAddress_
     })
 }
 
-// jni_fn_destroy!(Java_org_signal_client_internal_Native_ProtocolAddress_1Destroy destroys ProtocolAddress);
-
 jni_fn_get_jstring!(Java_org_signal_client_internal_Native_ProtocolAddress_1Name(ProtocolAddress) using
                     |p: &ProtocolAddress| Ok(p.name().to_string()));
 
@@ -104,8 +102,6 @@ pub unsafe extern "C" fn Java_org_signal_client_internal_Native_ECPublicKey_1Ver
     })
 }
 
-jni_fn_destroy!(Java_org_signal_client_internal_Native_ECPublicKey_1Destroy destroys PublicKey);
-
 jni_fn_deserialize!(Java_org_signal_client_internal_Native_ECPrivateKey_1Deserialize is PrivateKey::deserialize);
 
 jni_fn_get_jbytearray!(Java_org_signal_client_internal_Native_ECPrivateKey_1Serialize(PrivateKey) using
@@ -156,8 +152,6 @@ pub unsafe extern "C" fn Java_org_signal_client_internal_Native_ECPrivateKey_1Ag
         to_jbytearray(&env, Ok(shared_secret))
     })
 }
-
-jni_fn_destroy!(Java_org_signal_client_internal_Native_ECPrivateKey_1Destroy destroys PrivateKey);
 
 #[no_mangle]
 pub unsafe extern "C" fn Java_org_signal_client_internal_Native_IdentityKeyPair_1Serialize(
@@ -226,8 +220,6 @@ pub unsafe extern "C" fn Java_org_signal_client_internal_Native_NumericFingerpri
         box_object::<Fingerprint>(Ok(fprint))
     })
 }
-
-jni_fn_destroy!(Java_org_signal_client_internal_Native_NumericFingerprintGenerator_1Destroy destroys Fingerprint);
 
 jni_fn_get_jstring!(Java_org_signal_client_internal_Native_NumericFingerprintGenerator_1GetDisplayString(Fingerprint) using
     Fingerprint::display_string);
@@ -331,8 +323,6 @@ pub unsafe extern "C" fn Java_org_signal_client_internal_Native_SignalMessage_1N
     })
 }
 
-jni_fn_destroy!(Java_org_signal_client_internal_Native_SignalMessage_1Destroy destroys SignalMessage);
-
 jni_fn_get_jbytearray!(Java_org_signal_client_internal_Native_SignalMessage_1GetSenderRatchetKey(SignalMessage) using
                        |m: &SignalMessage| Ok(m.sender_ratchet_key().serialize()));
 
@@ -412,8 +402,6 @@ pub unsafe extern "C" fn Java_org_signal_client_internal_Native_PreKeySignalMess
     })
 }
 
-jni_fn_destroy!(Java_org_signal_client_internal_Native_PreKeySignalMessage_1Destroy destroys PreKeySignalMessage);
-
 jni_fn_get_jint!(Java_org_signal_client_internal_Native_PreKeySignalMessage_1GetVersion(PreKeySignalMessage) using
                  |m: &PreKeySignalMessage| Ok(m.message_version() as u32));
 
@@ -475,8 +463,6 @@ pub unsafe extern "C" fn Java_org_signal_client_internal_Native_SenderKeyMessage
 
 jni_fn_deserialize!(Java_org_signal_client_internal_Native_SenderKeyDistributionMessage_1Deserialize is SenderKeyDistributionMessage::try_from);
 
-jni_fn_destroy!(Java_org_signal_client_internal_Native_SenderKeyMessage_1Destroy destroys SenderKeyMessage);
-
 jni_fn_get_jint!(Java_org_signal_client_internal_Native_SenderKeyMessage_1GetKeyId(SenderKeyMessage) using
                  |m: &SenderKeyMessage| Ok(m.key_id()));
 
@@ -522,8 +508,6 @@ pub unsafe extern "C" fn Java_org_signal_client_internal_Native_SenderKeyDistrib
         box_object::<SenderKeyDistributionMessage>(skdm)
     })
 }
-
-jni_fn_destroy!(Java_org_signal_client_internal_Native_SenderKeyDistributionMessage_1Destroy destroys SenderKeyDistributionMessage);
 
 jni_fn_get_jint!(Java_org_signal_client_internal_Native_SenderKeyDistributionMessage_1GetId(SenderKeyDistributionMessage) using
                  SenderKeyDistributionMessage::id);
@@ -584,8 +568,6 @@ pub unsafe extern "C" fn Java_org_signal_client_internal_Native_PreKeyBundle_1Ne
         box_object::<PreKeyBundle>(bundle)
     })
 }
-
-jni_fn_destroy!(Java_org_signal_client_internal_Native_PreKeyBundle_1Destroy destroys PreKeyBundle);
 
 jni_fn_get_jint!(Java_org_signal_client_internal_Native_PreKeyBundle_1GetRegistrationId(PreKeyBundle) using
                  PreKeyBundle::registration_id);
@@ -679,8 +661,6 @@ jni_fn_get_jbytearray!(Java_org_signal_client_internal_Native_SignedPreKeyRecord
 jni_fn_get_jbytearray!(Java_org_signal_client_internal_Native_SignedPreKeyRecord_1GetSerialized(SignedPreKeyRecord) using
                        SignedPreKeyRecord::serialize);
 
-jni_fn_destroy!(Java_org_signal_client_internal_Native_SignedPreKeyRecord_1Destroy destroys SignedPreKeyRecord);
-
 /* PreKeyRecord */
 
 #[no_mangle]
@@ -717,8 +697,6 @@ jni_fn_get_new_boxed_obj!(Java_org_signal_client_internal_Native_PreKeyRecord_1G
 jni_fn_get_jbytearray!(Java_org_signal_client_internal_Native_PreKeyRecord_1GetSerialized(PreKeyRecord) using
                        PreKeyRecord::serialize);
 
-jni_fn_destroy!(Java_org_signal_client_internal_Native_PreKeyRecord_1Destroy destroys PreKeyRecord);
-
 /* SenderKeyName */
 
 #[no_mangle]
@@ -737,8 +715,6 @@ pub unsafe extern "C" fn Java_org_signal_client_internal_Native_SenderKeyName_1N
         box_object::<SenderKeyName>(name)
     })
 }
-
-jni_fn_destroy!(Java_org_signal_client_internal_Native_SenderKeyName_1Destroy destroys SenderKeyName);
 
 jni_fn_get_jstring!(Java_org_signal_client_internal_Native_SenderKeyName_1GetGroupId(SenderKeyName) using
                     SenderKeyName::group_id);
@@ -759,8 +735,6 @@ pub unsafe extern "C" fn Java_org_signal_client_internal_Native_SenderKeyRecord_
         box_object::<SenderKeyRecord>(Ok(skr))
     })
 }
-
-jni_fn_destroy!(Java_org_signal_client_internal_Native_SenderKeyRecord_1Destroy destroys SenderKeyRecord);
 
 jni_fn_deserialize!(Java_org_signal_client_internal_Native_SenderKeyRecord_1Deserialize is SenderKeyRecord::deserialize);
 

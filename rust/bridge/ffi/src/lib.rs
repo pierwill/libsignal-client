@@ -126,8 +126,6 @@ ffi_fn_get_cstring!(signal_address_get_name(ProtocolAddress) using
 ffi_fn_get_uint32!(signal_address_get_device_id(ProtocolAddress) using
                    |obj: &ProtocolAddress| { Ok(obj.device_id()) });
 
-// ffi_fn_destroy!(signal_address_destroy destroys ProtocolAddress);
-
 ffi_fn_clone!(signal_address_clone clones ProtocolAddress);
 
 ffi_fn_deserialize!(signal_publickey_deserialize(PublicKey) is PublicKey::deserialize);
@@ -174,8 +172,6 @@ pub unsafe extern "C" fn signal_publickey_verify(
         Ok(())
     })
 }
-
-ffi_fn_destroy!(signal_publickey_destroy destroys PublicKey);
 
 ffi_fn_clone!(signal_publickey_clone clones PublicKey);
 
@@ -230,8 +226,6 @@ pub unsafe extern "C" fn signal_privatekey_agree(
     })
 }
 
-ffi_fn_destroy!(signal_privatekey_destroy destroys PrivateKey);
-
 ffi_fn_clone!(signal_privatekey_clone clones PrivateKey);
 
 #[no_mangle]
@@ -283,8 +277,6 @@ pub unsafe extern "C" fn signal_session_record_archive_current_state(
     })
 }
 
-ffi_fn_destroy!(signal_session_record_destroy destroys SessionRecord);
-
 ffi_fn_clone!(signal_session_record_clone clones SessionRecord);
 
 #[no_mangle]
@@ -334,8 +326,6 @@ pub unsafe extern "C" fn signal_fingerprint_new(
         box_object::<Fingerprint>(obj, fprint)
     })
 }
-
-ffi_fn_destroy!(signal_fingerprint_destroy destroys Fingerprint);
 
 ffi_fn_clone!(signal_fingerprint_clone clones Fingerprint);
 
@@ -403,8 +393,6 @@ pub unsafe extern "C" fn signal_message_new(
         box_object::<SignalMessage>(obj, msg)
     })
 }
-
-ffi_fn_destroy!(signal_message_destroy destroys SignalMessage);
 
 ffi_fn_clone!(signal_message_clone clones SignalMessage);
 
@@ -478,8 +466,6 @@ pub unsafe extern "C" fn signal_pre_key_signal_message_new(
     })
 }
 
-ffi_fn_destroy!(signal_pre_key_signal_message_destroy destroys PreKeySignalMessage);
-
 ffi_fn_clone!(signal_pre_key_signal_message_clone clones PreKeySignalMessage);
 
 ffi_fn_get_uint32!(signal_pre_key_signal_message_get_version(PreKeySignalMessage) using
@@ -525,8 +511,6 @@ pub unsafe extern "C" fn signal_sender_key_message_new(
 }
 
 ffi_fn_deserialize!(signal_sender_key_message_deserialize(SenderKeyMessage) is SenderKeyMessage::try_from);
-
-ffi_fn_destroy!(signal_sender_key_message_destroy destroys SenderKeyMessage);
 
 ffi_fn_clone!(signal_sender_key_message_clone clones SenderKeyMessage);
 
@@ -575,8 +559,6 @@ pub unsafe extern "C" fn signal_sender_key_distribution_message_new(
 }
 
 ffi_fn_deserialize!(signal_sender_key_distribution_message_deserialize(SenderKeyDistributionMessage) is SenderKeyDistributionMessage::try_from);
-
-ffi_fn_destroy!(signal_sender_key_distribution_message_destroy destroys SenderKeyDistributionMessage);
 
 ffi_fn_clone!(signal_sender_key_distribution_message_clone clones SenderKeyDistributionMessage);
 
@@ -632,8 +614,6 @@ pub unsafe extern "C" fn signal_pre_key_bundle_new(
         box_object::<PreKeyBundle>(obj, bundle)
     })
 }
-
-ffi_fn_destroy!(signal_pre_key_bundle_destroy destroys PreKeyBundle);
 
 ffi_fn_clone!(signal_pre_key_bundle_clone clones PreKeyBundle);
 
@@ -707,8 +687,6 @@ ffi_fn_get_bytearray!(signal_signed_pre_key_record_get_signature(SignedPreKeyRec
 ffi_fn_get_bytearray!(signal_signed_pre_key_record_serialize(SignedPreKeyRecord) using
                       |m: &SignedPreKeyRecord| m.serialize());
 
-ffi_fn_destroy!(signal_signed_pre_key_record_destroy destroys SignedPreKeyRecord);
-
 ffi_fn_clone!(signal_signed_pre_key_record_clone clones SignedPreKeyRecord);
 
 /* PreKeyRecord */
@@ -746,8 +724,6 @@ ffi_fn_get_new_boxed_obj!(signal_pre_key_record_get_private_key(PrivateKey) from
 ffi_fn_get_bytearray!(signal_pre_key_record_serialize(PreKeyRecord) using
                       |m: &PreKeyRecord| m.serialize());
 
-ffi_fn_destroy!(signal_pre_key_record_destroy destroys PreKeyRecord);
-
 ffi_fn_clone!(signal_pre_key_record_clone clones PreKeyRecord);
 
 /* SenderKeyName */
@@ -769,8 +745,6 @@ pub unsafe extern "C" fn signal_sender_key_name_new(
     })
 }
 
-ffi_fn_destroy!(signal_sender_key_name_destroy destroys SenderKeyName);
-
 ffi_fn_clone!(signal_sender_key_name_clone clones SenderKeyName);
 
 ffi_fn_get_cstring!(signal_sender_key_name_get_group_id(SenderKeyName) using
@@ -790,8 +764,6 @@ pub unsafe extern "C" fn signal_sender_key_record_new_fresh(
 }
 
 ffi_fn_clone!(signal_sender_key_record_clone clones SenderKeyRecord);
-
-ffi_fn_destroy!(signal_sender_key_record_destroy destroys SenderKeyRecord);
 
 ffi_fn_deserialize!(signal_sender_key_record_deserialize(SenderKeyRecord) is SenderKeyRecord::deserialize);
 
@@ -1307,8 +1279,6 @@ pub unsafe extern "C" fn signal_encrypt_message(
         box_object(msg, ctext)
     })
 }
-
-ffi_fn_destroy!(signal_ciphertext_message_destroy destroys CiphertextMessage);
 
 #[derive(Debug)]
 #[repr(C)]
