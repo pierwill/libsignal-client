@@ -713,6 +713,7 @@ dependencies = [
  "libsignal-protocol-rust",
  "rand",
  "static_assertions",
+ "walkdir",
 ]
 
 [[package]]
