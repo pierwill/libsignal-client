@@ -5,13 +5,21 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 #
 
+set -euo pipefail
+
+SCRIPT_DIR=$(dirname "$0")
+cd "${SCRIPT_DIR}"/..
+
 # These paths are relative to the root directory
 ANDROID_LIB_DIR=java/android/src/main/jniLibs
 DESKTOP_LIB_DIR=java/java/src/main/resources
 
 export RUSTFLAGS="-C link-args=-s"
-
-cd .. || exit
+# On Linux, cdylibs don't include public symbols from their dependencies,
+# even if those symbols have been re-exported in the Rust source.
+# Using LTO works around this at the cost of a slightly slower build.
+# https://github.com/rust-lang/rfcs/issues/2771
+export CARGO_PROFILE_RELEASE_LTO=thin 
 
 if [ "$1" = 'desktop' ];
 then
